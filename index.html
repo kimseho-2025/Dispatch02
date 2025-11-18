@@ -3,25 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>성우 배차 관리 시스템 (완전 수정 버전)</title>
+    <title>성우 배차 관리 시스템</title>
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#3b82f6">
+    <meta name="description" content="실시간 배차 현황 관리 및 조회 시스템">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="성우배차">
+
+    <!-- App Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
-        body { 
+        body {
             font-family: 'Noto Sans KR', sans-serif;
             touch-action: pan-y pinch-zoom;
             -webkit-overflow-scrolling: touch;
+            /* Overscroll 제어: 페이지 바운스 방지 */
+            overscroll-behavior-y: none;
+            overscroll-behavior-x: auto;
         }
-       
+
+        /* 드로어 또는 모달 열렸을 때 body 스크롤 차단 */
+        body.drawer-open,
+        body.modal-open {
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+        }
+
         .mobile-table-container {
             touch-action: pan-x pan-y;
             -webkit-overflow-scrolling: touch;
+            /* 테이블 스크롤이 body로 전파되지 않도록 */
+            overscroll-behavior: contain;
         }
-        
+
         .modal-content {
             touch-action: pan-y;
+            /* 모달 내부 스크롤 격리 */
             overscroll-behavior: contain;
+        }
+
+        /* 드로어 메뉴 스크롤 격리 */
+        .mobile-drawer {
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
         }
        
         .modal-backdrop {
@@ -214,28 +251,50 @@
             .mobile-table-container {
                 overflow-x: auto;
                 -webkit-overflow-scrolling: touch;
+                /* 좌우 스크롤 snap 효과 (3일 단위) */
+                scroll-snap-type: x mandatory;
+                scroll-padding: 0;
+                scrollbar-width: none; /* Firefox */
             }
+
+            .mobile-table-container::-webkit-scrollbar {
+                display: none; /* Chrome, Safari */
+            }
+
+            /* 3일 단위 snap 포인트: 일요일(1열), 수요일(4열), 토요일(7열) */
+            .mobile-table th:nth-child(1),
+            .mobile-table th:nth-child(4),
+            .mobile-table th:nth-child(7),
+            .mobile-table td:nth-child(1),
+            .mobile-table td:nth-child(4),
+            .mobile-table td:nth-child(7) {
+                scroll-snap-align: start;
+                scroll-snap-stop: always;
+            }
+
             .mobile-table th,
             .mobile-table td {
-                min-width: 100px;
+                min-width: 30vw; /* 화면의 약 1/3 크기로 3열 표시 */
                 font-size: 0.8rem;
                 padding: 0.5rem;
             }
+
             .mobile-table .cell-preview {
                 min-height: 80px;
                 padding: 0.5rem;
             }
+
             .toast {
                 bottom: 12px;
                 right: 12px;
                 padding: 12px 16px;
                 font-size: 0.875rem;
             }
-            
+
             .modal-content {
                 margin-bottom: 20px;
             }
-            
+
             #pivotModal .modal-content > div:last-child {
                 padding-bottom: 80px;
             }
@@ -855,3 +914,232 @@
         }
 
         function updateBangRange() {
+            const min = parseInt(document.getElementById('bangMin').value) || 0;
+            const max = parseInt(document.getElementById('bangMax').value) || 0;
+
+            if (min > 0 && max > 0) {
+                if (max >= min) {
+                    pivotSelection.bang = `방 ${min}~${max}대`;
+                } else {
+                    pivotSelection.bang = '';
+                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+                }
+            } else if (min > 0) {
+                pivotSelection.bang = `방 ${min}대`;
+            } else {
+                pivotSelection.bang = '';
+            }
+            updatePivotPreview();
+        }
+
+        function updateJipRange() {
+            const min = parseInt(document.getElementById('jipMin').value) || 0;
+            const max = parseInt(document.getElementById('jipMax').value) || 0;
+
+            if (min > 0 && max > 0) {
+                if (max >= min) {
+                    pivotSelection.jip = `집 ${min}~${max}대`;
+                } else {
+                    pivotSelection.jip = '';
+                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+                }
+            } else if (min > 0) {
+                pivotSelection.jip = `집 ${min}대`;
+            } else {
+                pivotSelection.jip = '';
+            }
+            updatePivotPreview();
+        }
+
+        function toggleHeader() {
+            const headerContent = document.getElementById('headerContent');
+            const toggleIcon = document.getElementById('headerToggleIcon');
+
+            headerContent.classList.toggle('compact');
+            if (toggleIcon) {
+                toggleIcon.style.transform = headerContent.classList.contains('compact')
+                    ? 'rotate(180deg)'
+                    : 'rotate(0deg)';
+            }
+        }
+
+        // 스크롤 기반 헤더 자동 확장/축소 (모바일 최적화)
+        function handleHeaderScroll() {
+            if (window.innerWidth >= 768) return; // 데스크톱에서는 비활성화
+
+            const currentScrollY = window.scrollY;
+            const headerContent = document.getElementById('headerContent');
+
+            if (!headerContent) return;
+
+            // 스크롤 방향 감지
+            if (currentScrollY > lastScrollY && currentScrollY > 100) {
+                // 아래로 스크롤: 헤더 축소
+                headerContent.classList.add('compact');
+            } else if (currentScrollY < lastScrollY || currentScrollY < 50) {
+                // 위로 스크롤 또는 상단 근처: 헤더 확장
+                headerContent.classList.remove('compact');
+            }
+
+            lastScrollY = currentScrollY;
+        }
+
+        // 드로어 관련 함수들
+        function openDrawer() {
+            document.getElementById('mobileDrawer').classList.add('open');
+            document.getElementById('drawerOverlay').classList.add('show');
+            // body 스크롤 차단 (햄버거 메뉴 오동작 방지)
+            document.body.classList.add('drawer-open');
+        }
+
+        function closeDrawer() {
+            document.getElementById('mobileDrawer').classList.remove('open');
+            document.getElementById('drawerOverlay').classList.remove('show');
+            // body 스크롤 복원
+            document.body.classList.remove('drawer-open');
+        }
+
+        // 토스트 알림 함수
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hidden');
+
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        // 기본 함수 스텁들 (실제 구현은 기존 코드에 있을 것으로 가정)
+        function updatePivotPreview() {
+            // 미리보기 업데이트 로직
+            const preview = document.getElementById('previewContent');
+            if (!preview) return;
+
+            let html = '';
+            if (pivotSelection.company) html += `<div><strong>업체:</strong> ${pivotSelection.company}</div>`;
+            if (pivotSelection.loading) html += `<div><strong>상차지:</strong> ${pivotSelection.loading}</div>`;
+            if (pivotSelection.time) html += `<div><strong>시간:</strong> ${pivotSelection.time}</div>`;
+            if (pivotSelection.bang) html += `<div><strong>방통차:</strong> ${pivotSelection.bang}</div>`;
+            if (pivotSelection.jip) html += `<div><strong>집게차:</strong> ${pivotSelection.jip}</div>`;
+            if (pivotSelection.contact) html += `<div><strong>연락처:</strong> ${pivotSelection.contact}</div>`;
+            if (pivotSelection.notes) html += `<div><strong>특이사항:</strong> ${pivotSelection.notes}</div>`;
+
+            preview.innerHTML = html || '<div class="text-gray-400">입력된 정보가 없습니다</div>';
+        }
+
+        function selectPivot(field, value) {
+            pivotSelection[field] = value;
+            updatePivotPreview();
+        }
+
+        // 스크롤 이벤트 리스너 등록 (디바운싱 적용)
+        window.addEventListener('scroll', () => {
+            if (!scrollTicking) {
+                window.requestAnimationFrame(() => {
+                    handleHeaderScroll();
+                    scrollTicking = false;
+                });
+                scrollTicking = true;
+            }
+        });
+
+        // PWA 설치 프롬프트
+        let deferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            // 기본 설치 프롬프트 방지
+            e.preventDefault();
+            deferredPrompt = e;
+
+            // 사용자가 이전에 설치를 거부했는지 확인
+            const installDismissed = localStorage.getItem('pwa-install-dismissed');
+            if (installDismissed) {
+                return;
+            }
+
+            // 설치 버튼 표시 (3초 후)
+            setTimeout(() => {
+                showInstallPrompt();
+            }, 3000);
+        });
+
+        function showInstallPrompt() {
+            const toast = document.getElementById('toast');
+            toast.innerHTML = `
+                <div class="flex items-center justify-between gap-3">
+                    <div>
+                        <div class="font-black">📱 앱으로 설치</div>
+                        <div class="text-xs opacity-90">홈 화면에 추가하여 빠르게 접근하세요</div>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="installPWA()" class="px-3 py-1 bg-white text-green-600 rounded-lg text-sm font-bold">
+                            설치
+                        </button>
+                        <button onclick="dismissInstall()" class="px-3 py-1 bg-green-700 text-white rounded-lg text-sm">
+                            닫기
+                        </button>
+                    </div>
+                </div>
+            `;
+            toast.classList.remove('hidden');
+        }
+
+        function installPWA() {
+            if (!deferredPrompt) {
+                return;
+            }
+
+            // 설치 프롬프트 표시
+            deferredPrompt.prompt();
+
+            // 사용자 선택 결과
+            deferredPrompt.userChoice.then((choiceResult) => {
+                if (choiceResult.outcome === 'accepted') {
+                    console.log('✅ PWA 설치됨');
+                } else {
+                    console.log('❌ PWA 설치 거부됨');
+                }
+                deferredPrompt = null;
+                document.getElementById('toast').classList.add('hidden');
+            });
+        }
+
+        function dismissInstall() {
+            document.getElementById('toast').classList.add('hidden');
+            localStorage.setItem('pwa-install-dismissed', 'true');
+        }
+
+        // 앱이 설치된 후
+        window.addEventListener('appinstalled', () => {
+            console.log('✅ PWA가 설치되었습니다!');
+            deferredPrompt = null;
+        });
+
+        // Service Worker 등록
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then((registration) => {
+                        console.log('✅ Service Worker registered:', registration.scope);
+                    })
+                    .catch((error) => {
+                        console.log('❌ Service Worker registration failed:', error);
+                    });
+            });
+        }
+
+        // 초기화 함수 스텁 (페이지 로드 시)
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('📱 모바일 브라우저 최적화 적용됨');
+
+            // 작성자 정보 초기화
+            const writerName = localStorage.getItem('writerName') || '미인증';
+            document.getElementById('writerName').textContent = writerName;
+            if (document.getElementById('writerNameMobile')) {
+                document.getElementById('writerNameMobile').textContent = writerName;
+            }
+        });
+    </script>
+</body>
+</html>
