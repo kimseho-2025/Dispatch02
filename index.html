@@ -815,323 +815,1769 @@
     </div>
 
     <script>
-        const DB_NAME = 'dispatchDB';
-        const STORE_NAME = 'weekly_reports';
-        const LOG_STORE = 'access_logs';
-        const ERROR_STORE = 'error_logs';
-        const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
-        const DEFAULT_ROWS = 8;
-        const MAX_COMPANIES = 10;
-        const MAX_LOADINGS = 10;
-        const MAX_LOGS = 50;
-       
-        let db = null;
-        let currentWeekStart = '';
-        let writer = { name: '미인증', pin: '' };
-        let currentRow = -1;
-        let currentCol = -1;
-       
-        let COMPANIES = JSON.parse(localStorage.getItem('companyList') || '[]');
-        let LOADINGS = JSON.parse(localStorage.getItem('loadingList') || '[]');
-       
-        let pivotSelection = {
-            company: '', loading: '', time: '', bang: '', jip: '', 
-            contact: '', notes: '', date: '', status: 'SCHEDULED'
+// ==================== 전역 변수 선언 ====================
+const DB_NAME = 'dispatchDB';
+const STORE_NAME = 'weekly_reports';
+const LOG_STORE = 'access_logs';
+const ERROR_STORE = 'error_logs';
+const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
+const DEFAULT_ROWS = 8;
+const MAX_COMPANIES = 10;
+const MAX_LOADINGS = 10;
+const MAX_LOGS = 50;
+
+let db = null;
+let currentWeekStart = '';
+let writer = { name: '미인증', pin: '' };
+let currentRow = -1;
+let currentCol = -1;
+
+let COMPANIES = JSON.parse(localStorage.getItem('companyList') || '[]');
+let LOADINGS = JSON.parse(localStorage.getItem('loadingList') || '[]');
+
+let pivotSelection = {
+    company: '', loading: '', time: '', bang: '', jip: '',
+    contact: '', notes: '', date: '', status: 'SCHEDULED'
+};
+
+let bangMode = 'single';
+let jipMode = 'single';
+let lastScrollY = 0;
+let scrollTicking = false;
+let scrollDebounceTimer = null;
+
+const STATUS_MAP = {
+    SCHEDULED: { name: '예정', class: 'status-scheduled', color: 'bg-blue-100 text-blue-700' },
+    CONFIRMED: { name: '확정', class: 'status-confirmed', color: 'bg-orange-100 text-orange-700' },
+    COMPLETED: { name: '완료', class: 'status-completed', color: 'bg-green-100 text-green-700' }
+};
+
+// ==================== IndexedDB 초기화 ====================
+function initDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 3);
+
+        request.onerror = () => {
+            console.error('❌ IndexedDB 열기 실패:', request.error);
+            logError('DB Open Failed', request.error);
+            reject(request.error);
         };
-        
-        let bangMode = 'single';
-        let jipMode = 'single';
-        let lastScrollY = 0;
-        let scrollTicking = false;
-        let scrollDebounceTimer = null;
 
-        const STATUS_MAP = {
-            SCHEDULED: { name: '예정', class: 'status-scheduled', color: 'bg-blue-100 text-blue-700' },
-            CONFIRMED: { name: '확정', class: 'status-confirmed', color: 'bg-orange-100 text-orange-700' },
-            COMPLETED: { name: '완료', class: 'status-completed', color: 'bg-green-100 text-green-700' }
+        request.onsuccess = () => {
+            db = request.result;
+            console.log('✅ IndexedDB 연결 성공');
+            resolve(db);
         };
 
-        function syncState(weekStart, row, col) {
-            currentWeekStart = weekStart;
-            currentRow = row;
-            currentCol = col;
-            
-            if (typeof console !== 'undefined') {
-                console.log(`[✓ State Synced] Week: ${weekStart}, Row: ${row}, Col: ${col}`);
+        request.onupgradeneeded = (event) => {
+            const database = event.target.result;
+
+            if (!database.objectStoreNames.contains(STORE_NAME)) {
+                const store = database.createObjectStore(STORE_NAME, { keyPath: 'weekStart' });
+                store.createIndex('weekStart', 'weekStart', { unique: true });
+                console.log('✅ Object Store 생성됨:', STORE_NAME);
             }
+
+            if (!database.objectStoreNames.contains(LOG_STORE)) {
+                const logStore = database.createObjectStore(LOG_STORE, { keyPath: 'id', autoIncrement: true });
+                logStore.createIndex('timestamp', 'timestamp', { unique: false });
+                console.log('✅ Log Store 생성됨');
+            }
+
+            if (!database.objectStoreNames.contains(ERROR_STORE)) {
+                const errorStore = database.createObjectStore(ERROR_STORE, { keyPath: 'id', autoIncrement: true });
+                errorStore.createIndex('timestamp', 'timestamp', { unique: false });
+                console.log('✅ Error Store 생성됨');
+            }
+        };
+    });
+}
+
+// ==================== 데이터 조회 함수 ====================
+function getAllReports() {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
         }
 
-        function setBangMode(mode) {
-            bangMode = mode;
-            document.getElementById('bangModeSingle').className = mode === 'single' 
-                ? 'flex-1 py-2 px-3 bg-orange-200 border-2 border-orange-400 rounded-lg text-xs font-bold'
-                : 'flex-1 py-2 px-3 bg-white border-2 border-orange-300 rounded-lg text-xs font-bold';
-            document.getElementById('bangModeRange').className = mode === 'range'
-                ? 'flex-1 py-2 px-3 bg-orange-200 border-2 border-orange-400 rounded-lg text-xs font-bold'
-                : 'flex-1 py-2 px-3 bg-white border-2 border-orange-300 rounded-lg text-xs font-bold';
-            
-            document.getElementById('bangSingleInput').classList.toggle('hidden', mode === 'range');
-            document.getElementById('bangRangeInput').classList.toggle('hidden', mode === 'single');
-            
-            if (mode === 'range') {
-                document.getElementById('bangSelect').value = '';
-                pivotSelection.bang = '';
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.getAll();
+
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function getWeekReport(weekStart) {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
+        }
+
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.get(weekStart);
+
+        request.onsuccess = () => {
+            if (request.result) {
+                resolve(request.result);
             } else {
-                document.getElementById('bangMin').value = '';
-                document.getElementById('bangMax').value = '';
+                const emptyReport = createEmptyWeekReport(weekStart);
+                resolve(emptyReport);
             }
-            updatePivotPreview();
+        };
+
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function createEmptyWeekReport(weekStart) {
+    const report = {
+        weekStart: weekStart,
+        rows: []
+    };
+
+    const dates = [];
+    const start = new Date(weekStart);
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(start);
+        date.setDate(start.getDate() + i);
+        dates.push(date.toISOString().split('T')[0]);
+    }
+
+    for (let r = 0; r < DEFAULT_ROWS; r++) {
+        const row = {};
+        dates.forEach(date => {
+            row[date] = {
+                company: '',
+                loading: '',
+                time: '',
+                bang: '',
+                jip: '',
+                contact: '',
+                notes: '',
+                writer: '',
+                timestamp: '',
+                status: 'SCHEDULED'
+            };
+        });
+        report.rows.push(row);
+    }
+
+    return report;
+}
+
+// ==================== 데이터 저장 함수 ====================
+function saveWeekReport(weekStart, rows) {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
         }
 
-        function setJipMode(mode) {
-            jipMode = mode;
-            document.getElementById('jipModeSingle').className = mode === 'single'
-                ? 'flex-1 py-2 px-3 bg-cyan-200 border-2 border-cyan-400 rounded-lg text-xs font-bold'
-                : 'flex-1 py-2 px-3 bg-white border-2 border-cyan-300 rounded-lg text-xs font-bold';
-            document.getElementById('jipModeRange').className = mode === 'range'
-                ? 'flex-1 py-2 px-3 bg-cyan-200 border-2 border-cyan-400 rounded-lg text-xs font-bold'
-                : 'flex-1 py-2 px-3 bg-white border-2 border-cyan-300 rounded-lg text-xs font-bold';
-            
-            document.getElementById('jipSingleInput').classList.toggle('hidden', mode === 'range');
-            document.getElementById('jipRangeInput').classList.toggle('hidden', mode === 'single');
-            
-            if (mode === 'range') {
-                document.getElementById('jipSelect').value = '';
-                pivotSelection.jip = '';
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.put({ weekStart, rows });
+
+        request.onsuccess = () => {
+            console.log('✅ 주간 리포트 저장 성공:', weekStart);
+            resolve();
+        };
+
+        request.onerror = () => {
+            console.error('❌ 저장 실패:', request.error);
+            reject(request.error);
+        };
+    });
+}
+
+function deleteReport(weekStart) {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
+        }
+
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.delete(weekStart);
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// ==================== 로그 관리 함수 ====================
+function logAccess(action, details = '') {
+    if (!db) return Promise.resolve();
+
+    return new Promise((resolve) => {
+        const transaction = db.transaction([LOG_STORE], 'readwrite');
+        const store = transaction.objectStore(LOG_STORE);
+
+        const log = {
+            timestamp: new Date().toISOString(),
+            writer: writer.name,
+            action: action,
+            details: details
+        };
+
+        store.add(log);
+
+        const countRequest = store.count();
+        countRequest.onsuccess = () => {
+            if (countRequest.result > MAX_LOGS) {
+                const cursorRequest = store.openCursor();
+                cursorRequest.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor) {
+                        cursor.delete();
+                    }
+                };
+            }
+        };
+
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => resolve();
+    });
+}
+
+function logError(action, error) {
+    if (!db) return Promise.resolve();
+
+    return new Promise((resolve) => {
+        const transaction = db.transaction([ERROR_STORE], 'readwrite');
+        const store = transaction.objectStore(ERROR_STORE);
+
+        const errorLog = {
+            timestamp: new Date().toISOString(),
+            writer: writer.name,
+            action: action,
+            error: error.toString()
+        };
+
+        store.add(errorLog);
+
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => resolve();
+    });
+}
+
+function getAccessLogs() {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
+        }
+
+        const transaction = db.transaction([LOG_STORE], 'readonly');
+        const store = transaction.objectStore(LOG_STORE);
+        const request = store.getAll();
+
+        request.onsuccess = () => {
+            const logs = request.result || [];
+            logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            resolve(logs);
+        };
+
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function getErrorLogs() {
+    return new Promise((resolve, reject) => {
+        if (!db) {
+            reject(new Error('DB가 초기화되지 않았습니다'));
+            return;
+        }
+
+        const transaction = db.transaction([ERROR_STORE], 'readonly');
+        const store = transaction.objectStore(ERROR_STORE);
+        const request = store.getAll();
+
+        request.onsuccess = () => {
+            const logs = request.result || [];
+            logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            resolve(logs);
+        };
+
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// ==================== 날짜 처리 함수 ====================
+function getWeekStartDate(date = new Date()) {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = d.getDate() - day;
+    d.setDate(diff);
+    return d.toISOString().split('T')[0];
+}
+
+function formatDateDisplay(dateStr) {
+    const date = new Date(dateStr);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const dayName = DAYS[date.getDay()];
+    return `${month}/${day} (${dayName})`;
+}
+
+function parseDate(dateStr) {
+    return new Date(dateStr + 'T00:00:00');
+}
+
+function getWeekRange(weekStart) {
+    const start = new Date(weekStart);
+    const end = new Date(weekStart);
+    end.setDate(start.getDate() + 6);
+
+    return `${start.getMonth() + 1}/${start.getDate()} ~ ${end.getMonth() + 1}/${end.getDate()}`;
+}
+
+// ==================== 주간 네비게이션 함수 ====================
+function navigateWeek(offset) {
+    const current = new Date(currentWeekStart);
+    current.setDate(current.getDate() + (offset * 7));
+    currentWeekStart = getWeekStartDate(current);
+
+    updateWeekDisplay();
+    loadAndRenderWeek();
+    logAccess('Navigate Week', currentWeekStart);
+}
+
+function changeWeek(weekValue) {
+    if (!weekValue) return;
+
+    const [year, week] = weekValue.split('-W');
+    const date = new Date(year, 0, 1 + (week - 1) * 7);
+    const day = date.getDay();
+    const diff = date.getDate() - day;
+    date.setDate(diff);
+
+    currentWeekStart = getWeekStartDate(date);
+    updateWeekDisplay();
+    loadAndRenderWeek();
+    logAccess('Change Week', currentWeekStart);
+}
+
+function goToToday() {
+    currentWeekStart = getWeekStartDate(new Date());
+    updateWeekDisplay();
+    loadAndRenderWeek();
+    logAccess('Go To Today');
+}
+
+function updateWeekDisplay() {
+    const weekDisplay = document.getElementById('weekDisplay');
+    const weekRange = document.getElementById('weekRange');
+    const weekPicker = document.getElementById('weekPicker');
+
+    if (weekDisplay) {
+        const start = new Date(currentWeekStart);
+        const weekNum = getWeekNumber(start);
+        weekDisplay.textContent = `${start.getFullYear()}년 ${weekNum}주차`;
+    }
+
+    if (weekRange) {
+        weekRange.textContent = getWeekRange(currentWeekStart);
+    }
+
+    if (weekPicker) {
+        const start = new Date(currentWeekStart);
+        const year = start.getFullYear();
+        const weekNum = getWeekNumber(start);
+        weekPicker.value = `${year}-W${String(weekNum).padStart(2, '0')}`;
+    }
+}
+
+function getWeekNumber(date) {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+// ==================== 페이지 전환 함수 ====================
+function showPage(page) {
+    const viewPage = document.getElementById('viewPage');
+    const inputPage = document.getElementById('inputPage');
+    const btnView = document.getElementById('btnView');
+    const btnInput = document.getElementById('btnInput');
+
+    if (page === 'view') {
+        viewPage.classList.remove('hidden');
+        inputPage.classList.add('hidden');
+        btnView.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition shadow-lg bg-gradient-to-r from-blue-500 to-indigo-600 text-white';
+        btnInput.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition bg-gray-200 text-gray-700';
+        logAccess('View Page');
+    } else {
+        viewPage.classList.add('hidden');
+        inputPage.classList.remove('hidden');
+        btnView.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition bg-gray-200 text-gray-700';
+        btnInput.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition shadow-lg bg-gradient-to-r from-green-500 to-emerald-600 text-white';
+        logAccess('Input Page');
+    }
+}
+
+// ==================== 테이블 렌더링 함수 ====================
+async function loadAndRenderWeek() {
+    try {
+        const report = await getWeekReport(currentWeekStart);
+        renderViewTable(report);
+        renderInputTable(report);
+    } catch (error) {
+        console.error('❌ 주간 리포트 로드 실패:', error);
+        logError('Load Week Report', error);
+        showToast('데이터 로드 실패');
+    }
+}
+
+function renderViewTable(report) {
+    const tbody = document.getElementById('viewTableBody');
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    const dates = [];
+    const start = new Date(report.weekStart);
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(start);
+        date.setDate(start.getDate() + i);
+        dates.push(date.toISOString().split('T')[0]);
+
+        const th = document.getElementById(`vday${i}`);
+        if (th) {
+            th.textContent = formatDateDisplay(date.toISOString().split('T')[0]);
+
+            const today = new Date().toISOString().split('T')[0];
+            if (date.toISOString().split('T')[0] === today) {
+                th.classList.add('bg-yellow-300', 'text-yellow-900');
             } else {
-                document.getElementById('jipMin').value = '';
-                document.getElementById('jipMax').value = '';
+                th.classList.remove('bg-yellow-300', 'text-yellow-900');
             }
-            updatePivotPreview();
+        }
+    }
+
+    for (let r = 0; r < report.rows.length; r++) {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-200 hover:bg-blue-50 transition';
+
+        for (let c = 0; c < 7; c++) {
+            const date = dates[c];
+            const cell = report.rows[r][date] || {};
+            const td = document.createElement('td');
+            td.className = 'p-2 md:p-3 border-r border-gray-200 cell-preview cursor-pointer';
+
+            if (cell.company || cell.loading || cell.time || cell.bang || cell.jip) {
+                td.classList.add('has-content');
+
+                if (cell.status && STATUS_MAP[cell.status]) {
+                    td.classList.add(STATUS_MAP[cell.status].class);
+                }
+
+                let html = '<div class="space-y-1 text-xs md:text-sm">';
+                if (cell.company) html += `<div class="font-black text-gray-800">${cell.company}</div>`;
+                if (cell.loading) html += `<div class="text-gray-600">📍 ${cell.loading}</div>`;
+                if (cell.time) html += `<div class="text-blue-600">🕐 ${cell.time}</div>`;
+
+                const vehicles = [];
+                if (cell.bang) vehicles.push(cell.bang);
+                if (cell.jip) vehicles.push(cell.jip);
+                if (vehicles.length > 0) {
+                    html += `<div class="text-green-600 font-bold">🚛 ${vehicles.join(' / ')}</div>`;
+                }
+
+                if (cell.contact) html += `<div class="text-purple-600">📞 ${cell.contact}</div>`;
+                if (cell.notes) html += `<div class="text-orange-600">📝 ${cell.notes}</div>`;
+                if (cell.writer) html += `<div class="text-gray-500 text-xs mt-2">✍️ ${cell.writer}</div>`;
+
+                html += '</div>';
+                td.innerHTML = html;
+            } else {
+                td.innerHTML = '<div class="text-gray-300 text-center text-xs">-</div>';
+            }
+
+            td.onclick = () => openCellFocusView(r, c, date, cell);
+            tr.appendChild(td);
         }
 
-        function updateBangRange() {
+        tbody.appendChild(tr);
+    }
+}
+
+function renderInputTable(report) {
+    const tbody = document.getElementById('inputTableBody');
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    const dates = [];
+    const start = new Date(report.weekStart);
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(start);
+        date.setDate(start.getDate() + i);
+        dates.push(date.toISOString().split('T')[0]);
+
+        const th = document.getElementById(`day${i}`);
+        if (th) {
+            th.textContent = formatDateDisplay(date.toISOString().split('T')[0]);
+
+            const today = new Date().toISOString().split('T')[0];
+            if (date.toISOString().split('T')[0] === today) {
+                th.classList.add('bg-yellow-300', 'text-yellow-900');
+            } else {
+                th.classList.remove('bg-yellow-300', 'text-yellow-900');
+            }
+        }
+    }
+
+    for (let r = 0; r < report.rows.length; r++) {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-200 hover:bg-green-50 transition';
+
+        for (let c = 0; c < 7; c++) {
+            const date = dates[c];
+            const cell = report.rows[r][date] || {};
+            const td = document.createElement('td');
+            td.className = 'p-2 md:p-3 border-r border-gray-200 cell-preview cursor-pointer';
+
+            if (cell.company || cell.loading || cell.time || cell.bang || cell.jip) {
+                td.classList.add('has-content');
+
+                if (cell.status && STATUS_MAP[cell.status]) {
+                    td.classList.add(STATUS_MAP[cell.status].class);
+                }
+
+                let html = '<div class="space-y-1 text-xs md:text-sm">';
+                if (cell.company) html += `<div class="font-black text-gray-800">${cell.company}</div>`;
+                if (cell.loading) html += `<div class="text-gray-600">📍 ${cell.loading}</div>`;
+                if (cell.time) html += `<div class="text-blue-600">🕐 ${cell.time}</div>`;
+
+                const vehicles = [];
+                if (cell.bang) vehicles.push(cell.bang);
+                if (cell.jip) vehicles.push(cell.jip);
+                if (vehicles.length > 0) {
+                    html += `<div class="text-green-600 font-bold">🚛 ${vehicles.join(' / ')}</div>`;
+                }
+
+                if (cell.contact) html += `<div class="text-purple-600">📞 ${cell.contact}</div>`;
+                if (cell.notes) html += `<div class="text-orange-600">📝 ${cell.notes}</div>`;
+                if (cell.writer) html += `<div class="text-gray-500 text-xs mt-2">✍️ ${cell.writer}</div>`;
+
+                html += '</div>';
+                td.innerHTML = html;
+            } else {
+                td.innerHTML = '<div class="text-gray-300 text-center text-xs">빈 셀<br>클릭하여 입력</div>';
+            }
+
+            td.onclick = () => openPivotModal(r, c, date);
+            tr.appendChild(td);
+        }
+
+        tbody.appendChild(tr);
+    }
+}
+
+// ==================== 셀 포커스 뷰 ====================
+function openCellFocusView(row, col, date, cell) {
+    const focusView = document.getElementById('focusView');
+    const header = document.getElementById('focusViewHeader');
+    const body = document.getElementById('focusViewBody');
+
+    if (!focusView || !header || !body) return;
+
+    let statusClass = 'bg-gradient-to-r from-blue-600 to-indigo-700';
+    if (cell.status === 'CONFIRMED') {
+        statusClass = 'bg-gradient-to-r from-orange-600 to-red-700';
+    } else if (cell.status === 'COMPLETED') {
+        statusClass = 'bg-gradient-to-r from-green-600 to-emerald-700';
+    }
+
+    header.className = `p-4 rounded-t-2xl text-white ${statusClass}`;
+    header.innerHTML = `
+        <div class="font-black text-xl">${formatDateDisplay(date)}</div>
+        <div class="text-sm opacity-90">${STATUS_MAP[cell.status]?.name || '예정'}</div>
+    `;
+
+    let bodyHtml = '<div class="space-y-4">';
+
+    if (cell.company) {
+        bodyHtml += `
+            <div class="bg-blue-50 p-4 rounded-xl border-2 border-blue-200">
+                <div class="text-xs text-gray-600 mb-1">업체명</div>
+                <div class="font-black text-lg text-gray-800">${cell.company}</div>
+            </div>
+        `;
+    }
+
+    if (cell.loading) {
+        bodyHtml += `
+            <div class="bg-green-50 p-4 rounded-xl border-2 border-green-200">
+                <div class="text-xs text-gray-600 mb-1">상차지</div>
+                <div class="font-bold text-gray-800">📍 ${cell.loading}</div>
+            </div>
+        `;
+    }
+
+    if (cell.time) {
+        bodyHtml += `
+            <div class="bg-purple-50 p-4 rounded-xl border-2 border-purple-200">
+                <div class="text-xs text-gray-600 mb-1">시간</div>
+                <div class="font-bold text-gray-800">🕐 ${cell.time}</div>
+            </div>
+        `;
+    }
+
+    if (cell.bang || cell.jip) {
+        bodyHtml += '<div class="bg-orange-50 p-4 rounded-xl border-2 border-orange-200">';
+        bodyHtml += '<div class="text-xs text-gray-600 mb-2">배차 차량</div>';
+        if (cell.bang) bodyHtml += `<div class="font-bold text-gray-800">🚛 ${cell.bang}</div>`;
+        if (cell.jip) bodyHtml += `<div class="font-bold text-gray-800">🚜 ${cell.jip}</div>`;
+        bodyHtml += '</div>';
+    }
+
+    if (cell.contact) {
+        bodyHtml += `
+            <div class="bg-pink-50 p-4 rounded-xl border-2 border-pink-200">
+                <div class="text-xs text-gray-600 mb-1">연락처</div>
+                <div class="font-bold text-gray-800">📞 ${cell.contact}</div>
+            </div>
+        `;
+    }
+
+    if (cell.notes) {
+        bodyHtml += `
+            <div class="bg-amber-50 p-4 rounded-xl border-2 border-amber-200">
+                <div class="text-xs text-gray-600 mb-1">특이사항</div>
+                <div class="font-bold text-gray-800">📝 ${cell.notes}</div>
+            </div>
+        `;
+    }
+
+    if (cell.writer) {
+        bodyHtml += `
+            <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <div class="text-xs text-gray-500">
+                    작성자: ${cell.writer}
+                    ${cell.timestamp ? ` | ${new Date(cell.timestamp).toLocaleString('ko-KR')}` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    bodyHtml += '</div>';
+    body.innerHTML = bodyHtml;
+
+    focusView.classList.remove('hidden');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Cell Focus', `${date} Row${row} Col${col}`);
+}
+
+function closeFocusView() {
+    const focusView = document.getElementById('focusView');
+    if (focusView) {
+        focusView.classList.add('hidden');
+        document.body.classList.remove('modal-open');
+    }
+}
+
+// ==================== 피벗 입력 모달 ====================
+function openPivotModalForDate() {
+    const dateInput = document.getElementById('specificDate');
+    if (!dateInput || !dateInput.value) {
+        showToast('날짜를 선택해주세요');
+        return;
+    }
+
+    const selectedDate = dateInput.value;
+    const weekStart = getWeekStartDate(new Date(selectedDate));
+
+    if (weekStart !== currentWeekStart) {
+        currentWeekStart = weekStart;
+        updateWeekDisplay();
+        loadAndRenderWeek();
+    }
+
+    const start = new Date(weekStart);
+    const target = new Date(selectedDate);
+    const daysDiff = Math.floor((target - start) / (1000 * 60 * 60 * 24));
+
+    if (daysDiff >= 0 && daysDiff < 7) {
+        openPivotModal(0, daysDiff, selectedDate);
+    }
+}
+
+function openPivotModal(row, col, date) {
+    currentRow = row;
+    currentCol = col;
+    syncState(currentWeekStart, row, col);
+
+    const modal = document.getElementById('pivotModal');
+    if (!modal) return;
+
+    document.getElementById('pivotDate').value = date;
+    pivotSelection.date = date;
+
+    getWeekReport(currentWeekStart).then(report => {
+        const cell = report.rows[row][date] || {};
+
+        document.getElementById('pivotCompany').value = cell.company || '';
+        document.getElementById('pivotLoading').value = cell.loading || '';
+        document.getElementById('pivotTimeInput').value = cell.time || '';
+        document.getElementById('pivotContact').value = cell.contact || '';
+        document.getElementById('pivotNotes').value = cell.notes || '';
+        document.getElementById('pivotStatus').value = cell.status || 'SCHEDULED';
+
+        pivotSelection = {
+            company: cell.company || '',
+            loading: cell.loading || '',
+            time: cell.time || '',
+            bang: cell.bang || '',
+            jip: cell.jip || '',
+            contact: cell.contact || '',
+            notes: cell.notes || '',
+            date: date,
+            status: cell.status || 'SCHEDULED'
+        };
+
+        renderCompanyChips();
+        renderLoadingChips();
+        updatePivotPreview();
+    });
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Pivot Modal', `${date} Row${row} Col${col}`);
+}
+
+function closePivotModal() {
+    const modal = document.getElementById('pivotModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        document.body.classList.remove('modal-open');
+    }
+
+    document.getElementById('pivotCompany').value = '';
+    document.getElementById('pivotLoading').value = '';
+    document.getElementById('pivotTimeInput').value = '';
+    document.getElementById('pivotContact').value = '';
+    document.getElementById('pivotNotes').value = '';
+    document.getElementById('pivotStatus').value = 'SCHEDULED';
+    document.getElementById('bangSelect').value = '';
+    document.getElementById('jipSelect').value = '';
+
+    pivotSelection = {
+        company: '', loading: '', time: '', bang: '', jip: '',
+        contact: '', notes: '', date: '', status: 'SCHEDULED'
+    };
+
+    updatePivotPreview();
+}
+
+// ==================== 피벗 데이터 저장 ====================
+async function applyAndSave() {
+    const company = document.getElementById('pivotCompany').value.trim();
+    const loading = document.getElementById('pivotLoading').value.trim();
+    const time = document.getElementById('pivotTimeInput').value.trim();
+    const contact = document.getElementById('pivotContact').value.trim();
+    const notes = document.getElementById('pivotNotes').value.trim();
+    const status = document.getElementById('pivotStatus').value;
+    const date = document.getElementById('pivotDate').value;
+
+    if (!company) {
+        showToast('업체명은 필수 입력 사항입니다');
+        return;
+    }
+
+    if (!date) {
+        showToast('날짜를 선택해주세요');
+        return;
+    }
+
+    const weekStart = getWeekStartDate(new Date(date));
+
+    try {
+        const report = await getWeekReport(weekStart);
+
+        if (!report.rows[currentRow]) {
+            report.rows[currentRow] = {};
+        }
+
+        let bang = '';
+        let jip = '';
+
+        if (bangMode === 'single') {
+            bang = document.getElementById('bangSelect').value;
+        } else {
             const min = parseInt(document.getElementById('bangMin').value) || 0;
             const max = parseInt(document.getElementById('bangMax').value) || 0;
-
             if (min > 0 && max > 0) {
-                if (max >= min) {
-                    pivotSelection.bang = `방 ${min}~${max}대`;
-                } else {
-                    pivotSelection.bang = '';
-                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
-                }
+                bang = `방 ${min}~${max}대`;
             } else if (min > 0) {
-                pivotSelection.bang = `방 ${min}대`;
-            } else {
-                pivotSelection.bang = '';
+                bang = `방 ${min}대`;
             }
-            updatePivotPreview();
         }
 
-        function updateJipRange() {
+        if (jipMode === 'single') {
+            jip = document.getElementById('jipSelect').value;
+        } else {
             const min = parseInt(document.getElementById('jipMin').value) || 0;
             const max = parseInt(document.getElementById('jipMax').value) || 0;
-
             if (min > 0 && max > 0) {
-                if (max >= min) {
-                    pivotSelection.jip = `집 ${min}~${max}대`;
-                } else {
-                    pivotSelection.jip = '';
-                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
-                }
+                jip = `집 ${min}~${max}대`;
             } else if (min > 0) {
-                pivotSelection.jip = `집 ${min}대`;
-            } else {
-                pivotSelection.jip = '';
+                jip = `집 ${min}대`;
             }
+        }
+
+        report.rows[currentRow][date] = {
+            company: company,
+            loading: loading,
+            time: time,
+            bang: bang,
+            jip: jip,
+            contact: contact,
+            notes: notes,
+            status: status,
+            writer: writer.name,
+            timestamp: new Date().toISOString()
+        };
+
+        await saveWeekReport(weekStart, report.rows);
+
+        if (weekStart === currentWeekStart) {
+            await loadAndRenderWeek();
+        }
+
+        showToast('저장되었습니다');
+        closePivotModal();
+
+        logAccess('Save Pivot Data', `${date} ${company}`);
+    } catch (error) {
+        console.error('❌ 저장 실패:', error);
+        logError('Save Pivot Data', error);
+        showToast('저장 실패');
+    }
+}
+
+// ==================== 업체/상차지 관리 ====================
+function saveCompanyToList() {
+    const input = document.getElementById('pivotCompany');
+    const value = input.value.trim();
+
+    if (!value) {
+        showToast('업체명을 입력해주세요');
+        return;
+    }
+
+    if (COMPANIES.includes(value)) {
+        showToast('이미 목록에 있습니다');
+        return;
+    }
+
+    if (COMPANIES.length >= MAX_COMPANIES) {
+        COMPANIES.shift();
+    }
+
+    COMPANIES.push(value);
+    localStorage.setItem('companyList', JSON.stringify(COMPANIES));
+    renderCompanyChips();
+    showToast(`"${value}" 저장됨`);
+    logAccess('Save Company', value);
+}
+
+function saveLoadingToList() {
+    const input = document.getElementById('pivotLoading');
+    const value = input.value.trim();
+
+    if (!value) {
+        showToast('상차지를 입력해주세요');
+        return;
+    }
+
+    if (LOADINGS.includes(value)) {
+        showToast('이미 목록에 있습니다');
+        return;
+    }
+
+    if (LOADINGS.length >= MAX_LOADINGS) {
+        LOADINGS.shift();
+    }
+
+    LOADINGS.push(value);
+    localStorage.setItem('loadingList', JSON.stringify(LOADINGS));
+    renderLoadingChips();
+    showToast(`"${value}" 저장됨`);
+    logAccess('Save Loading', value);
+}
+
+function renderCompanyChips() {
+    const container = document.getElementById('companiesChips');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    COMPANIES.forEach((company, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.innerHTML = `
+            ${company}
+            <button onclick="removeCompany(${index}); event.stopPropagation();">×</button>
+        `;
+        chip.onclick = () => {
+            document.getElementById('pivotCompany').value = company;
+            pivotSelection.company = company;
             updatePivotPreview();
-        }
+        };
+        container.appendChild(chip);
+    });
+}
 
-        function toggleHeader() {
-            const headerContent = document.getElementById('headerContent');
-            const toggleIcon = document.getElementById('headerToggleIcon');
+function renderLoadingChips() {
+    const container = document.getElementById('loadingsChips');
+    if (!container) return;
 
-            headerContent.classList.toggle('compact');
-            if (toggleIcon) {
-                toggleIcon.style.transform = headerContent.classList.contains('compact')
-                    ? 'rotate(180deg)'
-                    : 'rotate(0deg)';
-            }
-        }
+    container.innerHTML = '';
 
-        // 스크롤 기반 헤더 자동 확장/축소 (모바일 최적화)
-        function handleHeaderScroll() {
-            if (window.innerWidth >= 768) return; // 데스크톱에서는 비활성화
-
-            const currentScrollY = window.scrollY;
-            const headerContent = document.getElementById('headerContent');
-
-            if (!headerContent) return;
-
-            // 스크롤 방향 감지
-            if (currentScrollY > lastScrollY && currentScrollY > 100) {
-                // 아래로 스크롤: 헤더 축소
-                headerContent.classList.add('compact');
-            } else if (currentScrollY < lastScrollY || currentScrollY < 50) {
-                // 위로 스크롤 또는 상단 근처: 헤더 확장
-                headerContent.classList.remove('compact');
-            }
-
-            lastScrollY = currentScrollY;
-        }
-
-        // 드로어 관련 함수들
-        function openDrawer() {
-            document.getElementById('mobileDrawer').classList.add('open');
-            document.getElementById('drawerOverlay').classList.add('show');
-            // body 스크롤 차단 (햄버거 메뉴 오동작 방지)
-            document.body.classList.add('drawer-open');
-        }
-
-        function closeDrawer() {
-            document.getElementById('mobileDrawer').classList.remove('open');
-            document.getElementById('drawerOverlay').classList.remove('show');
-            // body 스크롤 복원
-            document.body.classList.remove('drawer-open');
-        }
-
-        // 토스트 알림 함수
-        function showToast(message) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.classList.remove('hidden');
-
-            setTimeout(() => {
-                toast.classList.add('hidden');
-            }, 3000);
-        }
-
-        // 기본 함수 스텁들 (실제 구현은 기존 코드에 있을 것으로 가정)
-        function updatePivotPreview() {
-            // 미리보기 업데이트 로직
-            const preview = document.getElementById('previewContent');
-            if (!preview) return;
-
-            let html = '';
-            if (pivotSelection.company) html += `<div><strong>업체:</strong> ${pivotSelection.company}</div>`;
-            if (pivotSelection.loading) html += `<div><strong>상차지:</strong> ${pivotSelection.loading}</div>`;
-            if (pivotSelection.time) html += `<div><strong>시간:</strong> ${pivotSelection.time}</div>`;
-            if (pivotSelection.bang) html += `<div><strong>방통차:</strong> ${pivotSelection.bang}</div>`;
-            if (pivotSelection.jip) html += `<div><strong>집게차:</strong> ${pivotSelection.jip}</div>`;
-            if (pivotSelection.contact) html += `<div><strong>연락처:</strong> ${pivotSelection.contact}</div>`;
-            if (pivotSelection.notes) html += `<div><strong>특이사항:</strong> ${pivotSelection.notes}</div>`;
-
-            preview.innerHTML = html || '<div class="text-gray-400">입력된 정보가 없습니다</div>';
-        }
-
-        function selectPivot(field, value) {
-            pivotSelection[field] = value;
+    LOADINGS.forEach((loading, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.innerHTML = `
+            ${loading}
+            <button onclick="removeLoading(${index}); event.stopPropagation();">×</button>
+        `;
+        chip.onclick = () => {
+            document.getElementById('pivotLoading').value = loading;
+            pivotSelection.loading = loading;
             updatePivotPreview();
+        };
+        container.appendChild(chip);
+    });
+}
+
+function removeCompany(index) {
+    COMPANIES.splice(index, 1);
+    localStorage.setItem('companyList', JSON.stringify(COMPANIES));
+    renderCompanyChips();
+    showToast('삭제되었습니다');
+}
+
+function removeLoading(index) {
+    LOADINGS.splice(index, 1);
+    localStorage.setItem('loadingList', JSON.stringify(LOADINGS));
+    renderLoadingChips();
+    showToast('삭제되었습니다');
+}
+
+// ==================== 차량 설정 ====================
+function showVehicleModal() {
+    const modal = document.getElementById('vehicleModal');
+    if (!modal) return;
+
+    const bangCount = parseInt(localStorage.getItem('bangCount') || '5');
+    const jipCount = parseInt(localStorage.getItem('jipCount') || '3');
+
+    document.getElementById('bangCountInput').value = bangCount;
+    document.getElementById('jipCountInput').value = jipCount;
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Vehicle Modal');
+}
+
+function closeVehicleModal() {
+    const modal = document.getElementById('vehicleModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        document.body.classList.remove('modal-open');
+    }
+}
+
+function saveVehicleCount() {
+    const bangCount = parseInt(document.getElementById('bangCountInput').value);
+    const jipCount = parseInt(document.getElementById('jipCountInput').value);
+
+    if (bangCount < 1 || bangCount > 20) {
+        showToast('방통차는 1~20대 사이로 설정해주세요');
+        return;
+    }
+
+    if (jipCount < 1 || jipCount > 10) {
+        showToast('집게차는 1~10대 사이로 설정해주세요');
+        return;
+    }
+
+    localStorage.setItem('bangCount', bangCount);
+    localStorage.setItem('jipCount', jipCount);
+
+    populateVehicleSelects();
+    showToast('차량 대수가 저장되었습니다');
+    closeVehicleModal();
+
+    logAccess('Save Vehicle Count', `방${bangCount} 집${jipCount}`);
+}
+
+function populateVehicleSelects() {
+    const bangCount = parseInt(localStorage.getItem('bangCount') || '5');
+    const jipCount = parseInt(localStorage.getItem('jipCount') || '3');
+
+    const bangSelect = document.getElementById('bangSelect');
+    const jipSelect = document.getElementById('jipSelect');
+
+    if (bangSelect) {
+        bangSelect.innerHTML = '<option value="">선택안함</option>';
+        for (let i = 1; i <= bangCount; i++) {
+            bangSelect.innerHTML += `<option value="방 ${i}대">방 ${i}대</option>`;
+        }
+    }
+
+    if (jipSelect) {
+        jipSelect.innerHTML = '<option value="">선택안함</option>';
+        for (let i = 1; i <= jipCount; i++) {
+            jipSelect.innerHTML += `<option value="집 ${i}대">집 ${i}대</option>`;
+        }
+    }
+}
+
+// ==================== 검색 기능 ====================
+function showSearchModal() {
+    const modal = document.getElementById('searchModal');
+    if (!modal) return;
+
+    const today = new Date();
+    const monthAgo = new Date(today);
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+
+    document.getElementById('searchStartDate').value = monthAgo.toISOString().split('T')[0];
+    document.getElementById('searchEndDate').value = today.toISOString().split('T')[0];
+    document.getElementById('searchInput').value = '';
+    document.getElementById('searchResults').innerHTML = '';
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Search Modal');
+}
+
+function closeSearchModal() {
+    const modal = document.getElementById('searchModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        document.body.classList.remove('modal-open');
+    }
+}
+
+async function performSearch() {
+    const query = document.getElementById('searchInput').value.trim().toLowerCase();
+    const startDate = document.getElementById('searchStartDate').value;
+    const endDate = document.getElementById('searchEndDate').value;
+    const resultsDiv = document.getElementById('searchResults');
+
+    if (!resultsDiv) return;
+
+    if (!query && !startDate && !endDate) {
+        resultsDiv.innerHTML = '<div class="text-gray-400 text-center py-4">검색어 또는 날짜를 입력해주세요</div>';
+        return;
+    }
+
+    try {
+        const allReports = await getAllReports();
+        const results = [];
+
+        for (const report of allReports) {
+            for (let r = 0; r < report.rows.length; r++) {
+                for (const date in report.rows[r]) {
+                    const cell = report.rows[r][date];
+
+                    if (startDate && date < startDate) continue;
+                    if (endDate && date > endDate) continue;
+
+                    const searchText = [
+                        cell.company,
+                        cell.loading,
+                        cell.time,
+                        cell.bang,
+                        cell.jip,
+                        cell.contact,
+                        cell.notes,
+                        cell.writer
+                    ].join(' ').toLowerCase();
+
+                    if (!query || searchText.includes(query)) {
+                        if (cell.company || cell.loading || cell.time) {
+                            results.push({ date, cell, row: r });
+                        }
+                    }
+                }
+            }
         }
 
-        // 스크롤 이벤트 리스너 등록 (디바운싱 적용)
-        window.addEventListener('scroll', () => {
-            if (!scrollTicking) {
-                window.requestAnimationFrame(() => {
-                    handleHeaderScroll();
-                    scrollTicking = false;
-                });
-                scrollTicking = true;
-            }
-        });
+        results.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-        // PWA 설치 프롬프트
-        let deferredPrompt;
+        if (results.length === 0) {
+            resultsDiv.innerHTML = '<div class="text-gray-400 text-center py-4">검색 결과가 없습니다</div>';
+            return;
+        }
 
-        window.addEventListener('beforeinstallprompt', (e) => {
-            // 기본 설치 프롬프트 방지
-            e.preventDefault();
-            deferredPrompt = e;
+        resultsDiv.innerHTML = results.map(result => {
+            const { date, cell } = result;
+            const statusInfo = STATUS_MAP[cell.status] || STATUS_MAP.SCHEDULED;
 
-            // 사용자가 이전에 설치를 거부했는지 확인
-            const installDismissed = localStorage.getItem('pwa-install-dismissed');
-            if (installDismissed) {
-                return;
-            }
-
-            // 설치 버튼 표시 (3초 후)
-            setTimeout(() => {
-                showInstallPrompt();
-            }, 3000);
-        });
-
-        function showInstallPrompt() {
-            const toast = document.getElementById('toast');
-            toast.innerHTML = `
-                <div class="flex items-center justify-between gap-3">
-                    <div>
-                        <div class="font-black">📱 앱으로 설치</div>
-                        <div class="text-xs opacity-90">홈 화면에 추가하여 빠르게 접근하세요</div>
+            return `
+                <div class="p-4 border-2 ${statusInfo.class} rounded-xl cursor-pointer hover:shadow-lg transition"
+                     onclick="jumpToDate('${date}')">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="font-black text-gray-800">${cell.company}</div>
+                        <div class="text-xs px-2 py-1 rounded-full ${statusInfo.color}">${statusInfo.name}</div>
                     </div>
-                    <div class="flex gap-2">
-                        <button onclick="installPWA()" class="px-3 py-1 bg-white text-green-600 rounded-lg text-sm font-bold">
-                            설치
-                        </button>
-                        <button onclick="dismissInstall()" class="px-3 py-1 bg-green-700 text-white rounded-lg text-sm">
-                            닫기
-                        </button>
+                    <div class="text-sm text-gray-600 space-y-1">
+                        <div>📅 ${formatDateDisplay(date)}</div>
+                        ${cell.loading ? `<div>📍 ${cell.loading}</div>` : ''}
+                        ${cell.time ? `<div>🕐 ${cell.time}</div>` : ''}
+                        ${cell.bang ? `<div>🚛 ${cell.bang}</div>` : ''}
+                        ${cell.jip ? `<div>🚜 ${cell.jip}</div>` : ''}
+                        ${cell.writer ? `<div class="text-xs text-gray-500 mt-2">✍️ ${cell.writer}</div>` : ''}
                     </div>
                 </div>
             `;
-            toast.classList.remove('hidden');
-        }
+        }).join('');
 
-        function installPWA() {
-            if (!deferredPrompt) {
-                return;
-            }
+        logAccess('Perform Search', query);
+    } catch (error) {
+        console.error('❌ 검색 실패:', error);
+        logError('Perform Search', error);
+        resultsDiv.innerHTML = '<div class="text-red-500 text-center py-4">검색 중 오류가 발생했습니다</div>';
+    }
+}
 
-            // 설치 프롬프트 표시
-            deferredPrompt.prompt();
+function jumpToDate(date) {
+    const weekStart = getWeekStartDate(new Date(date));
+    currentWeekStart = weekStart;
+    updateWeekDisplay();
+    loadAndRenderWeek();
+    closeSearchModal();
+    showPage('view');
+    showToast(`${formatDateDisplay(date)}로 이동했습니다`);
+    logAccess('Jump To Date', date);
+}
 
-            // 사용자 선택 결과
-            deferredPrompt.userChoice.then((choiceResult) => {
-                if (choiceResult.outcome === 'accepted') {
-                    console.log('✅ PWA 설치됨');
-                } else {
-                    console.log('❌ PWA 설치 거부됨');
+// ==================== 내보내기 기능 ====================
+function showExportModal() {
+    const modal = document.getElementById('exportModal');
+    if (!modal) return;
+
+    const today = new Date();
+    const monthAgo = new Date(today);
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+
+    document.getElementById('exportStartDate').value = monthAgo.toISOString().split('T')[0];
+    document.getElementById('exportEndDate').value = today.toISOString().split('T')[0];
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Export Modal');
+}
+
+function closeExportModal() {
+    const modal = document.getElementById('exportModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        document.body.classList.remove('modal-open');
+    }
+}
+
+async function exportToCSV() {
+    const startDate = document.getElementById('exportStartDate').value;
+    const endDate = document.getElementById('exportEndDate').value;
+
+    if (!startDate || !endDate) {
+        showToast('시작일과 종료일을 선택해주세요');
+        return;
+    }
+
+    try {
+        const allReports = await getAllReports();
+        const csvRows = [];
+
+        csvRows.push(['날짜', '업체명', '상차지', '시간', '방통차', '집게차', '연락처', '특이사항', '상태', '작성자', '작성일시'].join(','));
+
+        for (const report of allReports) {
+            for (let r = 0; r < report.rows.length; r++) {
+                for (const date in report.rows[r]) {
+                    if (date < startDate || date > endDate) continue;
+
+                    const cell = report.rows[r][date];
+                    if (!cell.company && !cell.loading && !cell.time) continue;
+
+                    const statusName = STATUS_MAP[cell.status]?.name || '예정';
+                    const timestamp = cell.timestamp ? new Date(cell.timestamp).toLocaleString('ko-KR') : '';
+
+                    csvRows.push([
+                        date,
+                        cell.company || '',
+                        cell.loading || '',
+                        cell.time || '',
+                        cell.bang || '',
+                        cell.jip || '',
+                        cell.contact || '',
+                        cell.notes || '',
+                        statusName,
+                        cell.writer || '',
+                        timestamp
+                    ].map(v => `"${v}"`).join(','));
                 }
-                deferredPrompt = null;
-                document.getElementById('toast').classList.add('hidden');
-            });
-        }
-
-        function dismissInstall() {
-            document.getElementById('toast').classList.add('hidden');
-            localStorage.setItem('pwa-install-dismissed', 'true');
-        }
-
-        // 앱이 설치된 후
-        window.addEventListener('appinstalled', () => {
-            console.log('✅ PWA가 설치되었습니다!');
-            deferredPrompt = null;
-        });
-
-        // Service Worker 등록
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/service-worker.js')
-                    .then((registration) => {
-                        console.log('✅ Service Worker registered:', registration.scope);
-                    })
-                    .catch((error) => {
-                        console.log('❌ Service Worker registration failed:', error);
-                    });
-            });
-        }
-
-        // 초기화 함수 스텁 (페이지 로드 시)
-        window.addEventListener('DOMContentLoaded', () => {
-            console.log('📱 모바일 브라우저 최적화 적용됨');
-
-            // 작성자 정보 초기화
-            const writerName = localStorage.getItem('writerName') || '미인증';
-            document.getElementById('writerName').textContent = writerName;
-            if (document.getElementById('writerNameMobile')) {
-                document.getElementById('writerNameMobile').textContent = writerName;
             }
+        }
+
+        const csvContent = '\uFEFF' + csvRows.join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `배차현황_${startDate}_${endDate}.csv`;
+        link.click();
+
+        showToast('CSV 파일이 다운로드되었습니다');
+        logAccess('Export CSV', `${startDate} ~ ${endDate}`);
+    } catch (error) {
+        console.error('❌ CSV 내보내기 실패:', error);
+        logError('Export CSV', error);
+        showToast('내보내기 실패');
+    }
+}
+
+async function exportToExcel() {
+    const startDate = document.getElementById('exportStartDate').value;
+    const endDate = document.getElementById('exportEndDate').value;
+
+    if (!startDate || !endDate) {
+        showToast('시작일과 종료일을 선택해주세요');
+        return;
+    }
+
+    try {
+        const allReports = await getAllReports();
+        const data = [];
+
+        data.push(['날짜', '업체명', '상차지', '시간', '방통차', '집게차', '연락처', '특이사항', '상태', '작성자', '작성일시']);
+
+        for (const report of allReports) {
+            for (let r = 0; r < report.rows.length; r++) {
+                for (const date in report.rows[r]) {
+                    if (date < startDate || date > endDate) continue;
+
+                    const cell = report.rows[r][date];
+                    if (!cell.company && !cell.loading && !cell.time) continue;
+
+                    const statusName = STATUS_MAP[cell.status]?.name || '예정';
+                    const timestamp = cell.timestamp ? new Date(cell.timestamp).toLocaleString('ko-KR') : '';
+
+                    data.push([
+                        date,
+                        cell.company || '',
+                        cell.loading || '',
+                        cell.time || '',
+                        cell.bang || '',
+                        cell.jip || '',
+                        cell.contact || '',
+                        cell.notes || '',
+                        statusName,
+                        cell.writer || '',
+                        timestamp
+                    ]);
+                }
+            }
+        }
+
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '배차현황');
+
+        XLSX.writeFile(wb, `배차현황_${startDate}_${endDate}.xlsx`);
+
+        showToast('Excel 파일이 다운로드되었습니다');
+        logAccess('Export Excel', `${startDate} ~ ${endDate}`);
+    } catch (error) {
+        console.error('❌ Excel 내보내기 실패:', error);
+        logError('Export Excel', error);
+        showToast('내보내기 실패');
+    }
+}
+
+// ==================== 작성자 인증 ====================
+function showWriterModal() {
+    const modal = document.getElementById('writerModal');
+    if (!modal) return;
+
+    document.getElementById('writerNameInput').value = writer.name === '미인증' ? '' : writer.name;
+    document.getElementById('writerPassInput').value = '';
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.body.classList.add('modal-open');
+
+    logAccess('Open Writer Modal');
+}
+
+function closeWriterModal() {
+    const modal = document.getElementById('writerModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        document.body.classList.remove('modal-open');
+    }
+}
+
+function saveWriter() {
+    const name = document.getElementById('writerNameInput').value.trim();
+    const pin = document.getElementById('writerPassInput').value.trim();
+
+    if (!name) {
+        showToast('이름을 입력해주세요');
+        return;
+    }
+
+    if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        showToast('4자리 숫자 비밀번호를 입력해주세요');
+        return;
+    }
+
+    writer = { name, pin };
+    localStorage.setItem('writerName', name);
+    localStorage.setItem('writerPin', pin);
+
+    document.getElementById('writerName').textContent = name;
+    if (document.getElementById('writerNameMobile')) {
+        document.getElementById('writerNameMobile').textContent = name;
+    }
+
+    showToast(`${name}님 인증되었습니다`);
+    closeWriterModal();
+
+    logAccess('Writer Login', name);
+}
+
+function logout() {
+    writer = { name: '미인증', pin: '' };
+    localStorage.removeItem('writerName');
+    localStorage.removeItem('writerPin');
+
+    document.getElementById('writerName').textContent = '미인증';
+    if (document.getElementById('writerNameMobile')) {
+        document.getElementById('writerNameMobile').textContent = '미인증';
+    }
+
+    showToast('로그아웃되었습니다');
+    closeWriterModal();
+
+    logAccess('Writer Logout');
+}
+
+function loadWriter() {
+    const savedName = localStorage.getItem('writerName');
+    const savedPin = localStorage.getItem('writerPin');
+
+    if (savedName && savedPin) {
+        writer = { name: savedName, pin: savedPin };
+        document.getElementById('writerName').textContent = savedName;
+        if (document.getElementById('writerNameMobile')) {
+            document.getElementById('writerNameMobile').textContent = savedName;
+        }
+    }
+}
+
+// ==================== 접속 로그 ====================
+function showAccessLog() {
+    getAccessLogs().then(logs => {
+        const modal = document.createElement('div');
+        modal.className = 'fixed inset-0 bg-black bg-opacity-60 modal-backdrop flex items-center justify-center z-50 p-3';
+        modal.innerHTML = `
+            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto modal-content">
+                <div class="sticky top-0 bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-4 md:p-6 rounded-t-3xl z-10">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xl md:text-2xl font-black">접속 로그</h3>
+                        <button onclick="this.closest('.modal-backdrop').remove(); document.body.classList.remove('modal-open');"
+                                class="text-2xl md:text-3xl hover:text-gray-200 transition">×</button>
+                    </div>
+                </div>
+                <div class="p-4 md:p-6">
+                    ${logs.length === 0 ?
+                        '<div class="text-gray-400 text-center py-8">로그가 없습니다</div>' :
+                        logs.map(log => `
+                            <div class="p-3 mb-2 bg-gray-50 rounded-xl border border-gray-200">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-bold text-gray-800">${log.action}</div>
+                                    <div class="text-xs text-gray-500">${new Date(log.timestamp).toLocaleString('ko-KR')}</div>
+                                </div>
+                                <div class="text-sm text-gray-600 mt-1">
+                                    작성자: ${log.writer}
+                                    ${log.details ? ` | ${log.details}` : ''}
+                                </div>
+                            </div>
+                        `).join('')
+                    }
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.body.classList.add('modal-open');
+
+        logAccess('View Access Log');
+    }).catch(error => {
+        console.error('❌ 로그 조회 실패:', error);
+        showToast('로그 조회 실패');
+    });
+}
+
+// ==================== 버그 리포트 ====================
+function showBugReport() {
+    getErrorLogs().then(logs => {
+        const modal = document.createElement('div');
+        modal.className = 'fixed inset-0 bg-black bg-opacity-60 modal-backdrop flex items-center justify-center z-50 p-3';
+        modal.innerHTML = `
+            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto modal-content">
+                <div class="sticky top-0 bg-gradient-to-r from-red-600 to-pink-700 text-white p-4 md:p-6 rounded-t-3xl z-10">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xl md:text-2xl font-black">오류 로그</h3>
+                        <button onclick="this.closest('.modal-backdrop').remove(); document.body.classList.remove('modal-open');"
+                                class="text-2xl md:text-3xl hover:text-gray-200 transition">×</button>
+                    </div>
+                </div>
+                <div class="p-4 md:p-6">
+                    ${logs.length === 0 ?
+                        '<div class="text-gray-400 text-center py-8">오류 로그가 없습니다</div>' :
+                        logs.map(log => `
+                            <div class="p-3 mb-2 bg-red-50 rounded-xl border-2 border-red-200">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-bold text-red-800">${log.action}</div>
+                                    <div class="text-xs text-gray-500">${new Date(log.timestamp).toLocaleString('ko-KR')}</div>
+                                </div>
+                                <div class="text-sm text-gray-700 mt-2 font-mono bg-white p-2 rounded border">
+                                    ${log.error}
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">작성자: ${log.writer}</div>
+                            </div>
+                        `).join('')
+                    }
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.body.classList.add('modal-open');
+
+        logAccess('View Error Log');
+    }).catch(error => {
+        console.error('❌ 오류 로그 조회 실패:', error);
+        showToast('오류 로그 조회 실패');
+    });
+}
+
+// ==================== 상태 동기화 ====================
+function syncState(weekStart, row, col) {
+    currentWeekStart = weekStart;
+    currentRow = row;
+    currentCol = col;
+
+    if (typeof console !== 'undefined') {
+        console.log(`[✓ State Synced] Week: ${weekStart}, Row: ${row}, Col: ${col}`);
+    }
+}
+
+// ==================== 방통차/집게차 모드 설정 ====================
+function setBangMode(mode) {
+    bangMode = mode;
+    document.getElementById('bangModeSingle').className = mode === 'single'
+        ? 'flex-1 py-2 px-3 bg-orange-200 border-2 border-orange-400 rounded-lg text-xs font-bold'
+        : 'flex-1 py-2 px-3 bg-white border-2 border-orange-300 rounded-lg text-xs font-bold';
+    document.getElementById('bangModeRange').className = mode === 'range'
+        ? 'flex-1 py-2 px-3 bg-orange-200 border-2 border-orange-400 rounded-lg text-xs font-bold'
+        : 'flex-1 py-2 px-3 bg-white border-2 border-orange-300 rounded-lg text-xs font-bold';
+
+    document.getElementById('bangSingleInput').classList.toggle('hidden', mode === 'range');
+    document.getElementById('bangRangeInput').classList.toggle('hidden', mode === 'single');
+
+    if (mode === 'range') {
+        document.getElementById('bangSelect').value = '';
+        pivotSelection.bang = '';
+    } else {
+        document.getElementById('bangMin').value = '';
+        document.getElementById('bangMax').value = '';
+    }
+    updatePivotPreview();
+}
+
+function setJipMode(mode) {
+    jipMode = mode;
+    document.getElementById('jipModeSingle').className = mode === 'single'
+        ? 'flex-1 py-2 px-3 bg-cyan-200 border-2 border-cyan-400 rounded-lg text-xs font-bold'
+        : 'flex-1 py-2 px-3 bg-white border-2 border-cyan-300 rounded-lg text-xs font-bold';
+    document.getElementById('jipModeRange').className = mode === 'range'
+        ? 'flex-1 py-2 px-3 bg-cyan-200 border-2 border-cyan-400 rounded-lg text-xs font-bold'
+        : 'flex-1 py-2 px-3 bg-white border-2 border-cyan-300 rounded-lg text-xs font-bold';
+
+    document.getElementById('jipSingleInput').classList.toggle('hidden', mode === 'range');
+    document.getElementById('jipRangeInput').classList.toggle('hidden', mode === 'single');
+
+    if (mode === 'range') {
+        document.getElementById('jipSelect').value = '';
+        pivotSelection.jip = '';
+    } else {
+        document.getElementById('jipMin').value = '';
+        document.getElementById('jipMax').value = '';
+    }
+    updatePivotPreview();
+}
+
+function updateBangRange() {
+    const min = parseInt(document.getElementById('bangMin').value) || 0;
+    const max = parseInt(document.getElementById('bangMax').value) || 0;
+
+    if (min > 0 && max > 0) {
+        if (max >= min) {
+            pivotSelection.bang = `방 ${min}~${max}대`;
+        } else {
+            pivotSelection.bang = '';
+            showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+        }
+    } else if (min > 0) {
+        pivotSelection.bang = `방 ${min}대`;
+    } else {
+        pivotSelection.bang = '';
+    }
+    updatePivotPreview();
+}
+
+function updateJipRange() {
+    const min = parseInt(document.getElementById('jipMin').value) || 0;
+    const max = parseInt(document.getElementById('jipMax').value) || 0;
+
+    if (min > 0 && max > 0) {
+        if (max >= min) {
+            pivotSelection.jip = `집 ${min}~${max}대`;
+        } else {
+            pivotSelection.jip = '';
+            showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+        }
+    } else if (min > 0) {
+        pivotSelection.jip = `집 ${min}대`;
+    } else {
+        pivotSelection.jip = '';
+    }
+    updatePivotPreview();
+}
+
+// ==================== 헤더 토글 ====================
+function toggleHeader() {
+    const headerContent = document.getElementById('headerContent');
+    const toggleIcon = document.getElementById('headerToggleIcon');
+
+    headerContent.classList.toggle('compact');
+    if (toggleIcon) {
+        toggleIcon.style.transform = headerContent.classList.contains('compact')
+            ? 'rotate(180deg)'
+            : 'rotate(0deg)';
+    }
+}
+
+function handleHeaderScroll() {
+    if (window.innerWidth >= 768) return;
+
+    const currentScrollY = window.scrollY;
+    const headerContent = document.getElementById('headerContent');
+
+    if (!headerContent) return;
+
+    if (currentScrollY > lastScrollY && currentScrollY > 100) {
+        headerContent.classList.add('compact');
+    } else if (currentScrollY < lastScrollY || currentScrollY < 50) {
+        headerContent.classList.remove('compact');
+    }
+
+    lastScrollY = currentScrollY;
+}
+
+// ==================== 드로어 메뉴 ====================
+function openDrawer() {
+    document.getElementById('mobileDrawer').classList.add('open');
+    document.getElementById('drawerOverlay').classList.add('show');
+    document.body.classList.add('drawer-open');
+}
+
+function closeDrawer() {
+    document.getElementById('mobileDrawer').classList.remove('open');
+    document.getElementById('drawerOverlay').classList.remove('show');
+    document.body.classList.remove('drawer-open');
+}
+
+// ==================== 토스트 알림 ====================
+function showToast(message) {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.remove('hidden');
+
+    setTimeout(() => {
+        toast.classList.add('hidden');
+    }, 3000);
+}
+
+// ==================== 피벗 미리보기 ====================
+function updatePivotPreview() {
+    const preview = document.getElementById('previewContent');
+    if (!preview) return;
+
+    pivotSelection.company = document.getElementById('pivotCompany').value.trim();
+    pivotSelection.loading = document.getElementById('pivotLoading').value.trim();
+    pivotSelection.time = document.getElementById('pivotTimeInput').value.trim();
+
+    let html = '';
+    if (pivotSelection.company) html += `<div><strong>업체:</strong> ${pivotSelection.company}</div>`;
+    if (pivotSelection.loading) html += `<div><strong>상차지:</strong> ${pivotSelection.loading}</div>`;
+    if (pivotSelection.time) html += `<div><strong>시간:</strong> ${pivotSelection.time}</div>`;
+    if (pivotSelection.bang) html += `<div><strong>방통차:</strong> ${pivotSelection.bang}</div>`;
+    if (pivotSelection.jip) html += `<div><strong>집게차:</strong> ${pivotSelection.jip}</div>`;
+    if (pivotSelection.contact) html += `<div><strong>연락처:</strong> ${pivotSelection.contact}</div>`;
+    if (pivotSelection.notes) html += `<div><strong>특이사항:</strong> ${pivotSelection.notes}</div>`;
+
+    preview.innerHTML = html || '<div class="text-gray-400">입력된 정보가 없습니다</div>';
+}
+
+function selectPivot(field, value) {
+    pivotSelection[field] = value;
+    updatePivotPreview();
+}
+
+// ==================== 스크롤 이벤트 ====================
+window.addEventListener('scroll', () => {
+    if (!scrollTicking) {
+        window.requestAnimationFrame(() => {
+            handleHeaderScroll();
+            scrollTicking = false;
         });
+        scrollTicking = true;
+    }
+});
+
+// ==================== PWA 설치 프롬프트 ====================
+let deferredPrompt;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+
+    const installDismissed = localStorage.getItem('pwa-install-dismissed');
+    if (installDismissed) {
+        return;
+    }
+
+    setTimeout(() => {
+        showInstallPrompt();
+    }, 3000);
+});
+
+function showInstallPrompt() {
+    const toast = document.getElementById('toast');
+    toast.innerHTML = `
+        <div class="flex items-center justify-between gap-3">
+            <div>
+                <div class="font-black">📱 앱으로 설치</div>
+                <div class="text-xs opacity-90">홈 화면에 추가하여 빠르게 접근하세요</div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="installPWA()" class="px-3 py-1 bg-white text-green-600 rounded-lg text-sm font-bold">
+                    설치
+                </button>
+                <button onclick="dismissInstall()" class="px-3 py-1 bg-green-700 text-white rounded-lg text-sm">
+                    닫기
+                </button>
+            </div>
+        </div>
+    `;
+    toast.classList.remove('hidden');
+}
+
+function installPWA() {
+    if (!deferredPrompt) {
+        return;
+    }
+
+    deferredPrompt.prompt();
+
+    deferredPrompt.userChoice.then((choiceResult) => {
+        if (choiceResult.outcome === 'accepted') {
+            console.log('✅ PWA 설치됨');
+        } else {
+            console.log('❌ PWA 설치 거부됨');
+        }
+        deferredPrompt = null;
+        document.getElementById('toast').classList.add('hidden');
+    });
+}
+
+function dismissInstall() {
+    document.getElementById('toast').classList.add('hidden');
+    localStorage.setItem('pwa-install-dismissed', 'true');
+}
+
+window.addEventListener('appinstalled', () => {
+    console.log('✅ PWA가 설치되었습니다!');
+    deferredPrompt = null;
+});
+
+// ==================== Service Worker 등록 ====================
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/service-worker.js')
+            .then((registration) => {
+                console.log('✅ Service Worker registered:', registration.scope);
+            })
+            .catch((error) => {
+                console.log('❌ Service Worker registration failed:', error);
+            });
+    });
+}
+
+// ==================== 초기화 ====================
+window.addEventListener('DOMContentLoaded', async () => {
+    console.log('📱 모바일 브라우저 최적화 적용됨');
+
+    try {
+        await initDB();
+
+        loadWriter();
+
+        currentWeekStart = getWeekStartDate(new Date());
+        updateWeekDisplay();
+
+        populateVehicleSelects();
+
+        const today = new Date();
+        document.getElementById('specificDate').value = today.toISOString().split('T')[0];
+
+        await loadAndRenderWeek();
+
+        console.log('✅ 애플리케이션 초기화 완료');
+        logAccess('App Started');
+    } catch (error) {
+        console.error('❌ 초기화 실패:', error);
+        logError('App Initialization', error);
+        showToast('초기화 중 오류가 발생했습니다');
+    }
+});
     </script>
 </body>
 </html>
