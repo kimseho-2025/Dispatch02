@@ -1,5 +1,5 @@
 // Service Worker for 성우 배차 관리 시스템
-const CACHE_NAME = 'dispatch-v1';
+const CACHE_NAME = 'dispatch-v2'; // 버전 업데이트!
 const urlsToCache = [
   '/',
   '/index.html',
