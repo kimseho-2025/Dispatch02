@@ -261,22 +261,14 @@
                 display: none; /* Chrome, Safari */
             }
 
-            /* 3일 단위 snap 포인트: 일요일(1열), 수요일(4열), 토요일(7열) */
-            .mobile-table th:nth-child(1),
-            .mobile-table th:nth-child(4),
-            .mobile-table th:nth-child(7),
-            .mobile-table td:nth-child(1),
-            .mobile-table td:nth-child(4),
-            .mobile-table td:nth-child(7) {
-                scroll-snap-align: start;
-                scroll-snap-stop: always;
-            }
-
+            /* 1열씩 이동 가능한 snap (모든 열이 snap 포인트) */
             .mobile-table th,
             .mobile-table td {
                 min-width: 30vw; /* 화면의 약 1/3 크기로 3열 표시 */
                 font-size: 0.8rem;
                 padding: 0.5rem;
+                /* 모든 열에 snap 적용 = 1칸씩 이동 가능 */
+                scroll-snap-align: start;
             }
 
             .mobile-table .cell-preview {
