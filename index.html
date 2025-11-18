@@ -855,3 +855,1909 @@
         }
 
         function updateBangRange() {
+            const min = parseInt(document.getElementById('bangMin').value) || 0;
+            const max = parseInt(document.getElementById('bangMax').value) || 0;
+
+            if (min > 0 && max > 0) {
+                if (max >= min) {
+                    pivotSelection.bang = `방 ${min}~${max}대`;
+                } else {
+                    pivotSelection.bang = '';
+                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+                }
+            } else if (min > 0) {
+                pivotSelection.bang = `방 ${min}대`;
+            } else {
+                pivotSelection.bang = '';
+            }
+            updatePivotPreview();
+        }
+
+        function updateJipRange() {
+            const min = parseInt(document.getElementById('jipMin').value) || 0;
+            const max = parseInt(document.getElementById('jipMax').value) || 0;
+
+            if (min > 0 && max > 0) {
+                if (max >= min) {
+                    pivotSelection.jip = `집 ${min}~${max}대`;
+                } else {
+                    pivotSelection.jip = '';
+                    showToast('⚠️ 최대값은 최소값보다 크거나 같아야 합니다');
+                }
+            } else if (min > 0) {
+                pivotSelection.jip = `집 ${min}대`;
+            } else {
+                pivotSelection.jip = '';
+            }
+            updatePivotPreview();
+        }
+
+        function updatePivotPreview() {
+            pivotSelection.company = document.getElementById('pivotCompany').value.trim();
+            pivotSelection.loading = document.getElementById('pivotLoading').value.trim();
+            pivotSelection.time = document.getElementById('pivotTimeInput').value.trim();
+            pivotSelection.contact = document.getElementById('pivotContact').value.trim();
+            pivotSelection.notes = document.getElementById('pivotNotes').value.trim();
+            pivotSelection.status = document.getElementById('pivotStatus').value;
+
+            const statusInfo = STATUS_MAP[pivotSelection.status] || STATUS_MAP.SCHEDULED;
+
+            let html = '<div class="space-y-2">';
+
+            html += `<div class="p-2 rounded-lg ${statusInfo.color} border-2">
+                <span class="font-bold">상태:</span> ${statusInfo.name}
+            </div>`;
+
+            if (pivotSelection.company) {
+                html += `<div class="p-2 bg-blue-50 rounded-lg border-2 border-blue-200">
+                    <span class="font-bold">업체:</span> ${pivotSelection.company}
+                </div>`;
+            }
+
+            if (pivotSelection.loading) {
+                html += `<div class="p-2 bg-green-50 rounded-lg border-2 border-green-200">
+                    <span class="font-bold">상차지:</span> ${pivotSelection.loading}
+                </div>`;
+            }
+
+            if (pivotSelection.time) {
+                html += `<div class="p-2 bg-purple-50 rounded-lg border-2 border-purple-200">
+                    <span class="font-bold">시간:</span> ${pivotSelection.time}
+                </div>`;
+            }
+
+            if (pivotSelection.bang) {
+                html += `<div class="p-2 bg-orange-50 rounded-lg border-2 border-orange-200">
+                    <span class="font-bold">방통차:</span> ${pivotSelection.bang}
+                </div>`;
+            }
+
+            if (pivotSelection.jip) {
+                html += `<div class="p-2 bg-cyan-50 rounded-lg border-2 border-cyan-200">
+                    <span class="font-bold">집게차:</span> ${pivotSelection.jip}
+                </div>`;
+            }
+
+            if (pivotSelection.contact) {
+                html += `<div class="p-2 bg-pink-50 rounded-lg border-2 border-pink-200">
+                    <span class="font-bold">연락처:</span> ${pivotSelection.contact}
+                </div>`;
+            }
+
+            if (pivotSelection.notes) {
+                html += `<div class="p-2 bg-amber-50 rounded-lg border-2 border-amber-200">
+                    <span class="font-bold">특이사항:</span> ${pivotSelection.notes}
+                </div>`;
+            }
+
+            html += '</div>';
+            document.getElementById('previewContent').innerHTML = html;
+        }
+
+        function parseDate(dateString) {
+            if (!dateString) return new Date();
+
+            const isoPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+            const match = dateString.match(isoPattern);
+
+            if (match) {
+                const year = parseInt(match[1], 10);
+                const month = parseInt(match[2], 10) - 1;
+                const day = parseInt(match[3], 10);
+                return new Date(year, month, day);
+            }
+
+            return new Date(dateString);
+        }
+
+        function formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function getWeekStart(date) {
+            const d = new Date(date);
+            const day = d.getDay();
+            const diff = day === 0 ? 0 : -day;
+            d.setDate(d.getDate() + diff);
+            d.setHours(0, 0, 0, 0);
+            return d;
+        }
+
+        function getWeekInputValue(date) {
+            const d = new Date(date);
+            const year = d.getFullYear();
+            const onejan = new Date(year, 0, 1);
+            const week = Math.ceil((((d - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+            return `${year}-W${String(week).padStart(2, '0')}`;
+        }
+
+        function createEmptyWeek(weekStart) {
+            return {
+                weekStart: weekStart,
+                rows: Array.from({length: DEFAULT_ROWS}, () =>
+                    Array.from({length: 7}, () => ({}))
+                )
+            };
+        }
+
+        function initDB() {
+            return new Promise((resolve, reject) => {
+                const indexedDB = window.indexedDB || window.mozIndexedDB ||
+                                  window.webkitIndexedDB || window.msIndexedDB;
+
+                if (!indexedDB) {
+                    alert('이 브라우저는 IndexedDB를 지원하지 않습니다.');
+                    reject('IndexedDB not supported');
+                    return;
+                }
+
+                const request = indexedDB.open(DB_NAME, 2);
+
+                request.onerror = function(e) {
+                    console.error('DB 초기화 실패:', e.target.error);
+                    logError('DB Init Error', 'IndexedDB 초기화 실패', e.target.error.message);
+                    reject(e.target.error);
+                };
+
+                request.onsuccess = function(e) {
+                    db = e.target.result;
+                    console.log('[✓ DB 초기화 성공]');
+
+                    db.onerror = function(event) {
+                        console.error('Database error:', event.target.error);
+                        logError('DB Error', 'Database error', event.target.error.message);
+                    };
+
+                    resolve(db);
+                };
+
+                request.onupgradeneeded = function(e) {
+                    const database = e.target.result;
+
+                    if (!database.objectStoreNames.contains(STORE_NAME)) {
+                        database.createObjectStore(STORE_NAME, { keyPath: 'weekStart' });
+                        console.log('[✓ Store 생성:', STORE_NAME + ']');
+                    }
+
+                    if (!database.objectStoreNames.contains(LOG_STORE)) {
+                        const logStore = database.createObjectStore(LOG_STORE, {
+                            keyPath: 'id',
+                            autoIncrement: true
+                        });
+                        logStore.createIndex('timestamp', 'timestamp', { unique: false });
+                        console.log('[✓ Store 생성:', LOG_STORE + ']');
+                    }
+
+                    if (!database.objectStoreNames.contains(ERROR_STORE)) {
+                        const errorStore = database.createObjectStore(ERROR_STORE, {
+                            keyPath: 'id',
+                            autoIncrement: true
+                        });
+                        errorStore.createIndex('timestamp', 'timestamp', { unique: false });
+                        console.log('[✓ Store 생성:', ERROR_STORE + ']');
+                    }
+                };
+            });
+        }
+
+        function getStore(mode = 'readonly') {
+            if (!db) {
+                console.error('DB가 초기화되지 않았습니다.');
+                return null;
+            }
+
+            try {
+                const tx = db.transaction(STORE_NAME, mode);
+
+                tx.onerror = function(e) {
+                    console.error('Transaction error:', e.target.error);
+                    logError('Transaction Error', 'IndexedDB 트랜잭션 오류', e.target.error.message);
+                };
+
+                return tx.objectStore(STORE_NAME);
+            } catch(e) {
+                console.error('getStore error:', e);
+                logError('getStore Error', 'Store 접근 실패', e.message);
+                return null;
+            }
+        }
+
+        function saveToIDB(data) {
+            return new Promise((resolve, reject) => {
+                const store = getStore('readwrite');
+                if (!store) {
+                    reject('Store unavailable');
+                    return;
+                }
+
+                const request = store.put(data);
+
+                request.onsuccess = function() {
+                    console.log('[✓ 저장 완료:', data.weekStart + ']');
+                    resolve(data);
+                };
+
+                request.onerror = function(e) {
+                    console.error('저장 실패:', e.target.error);
+                    logError('Save Error', '데이터 저장 실패', e.target.error.message);
+                    reject(e.target.error);
+                };
+            });
+        }
+
+        function loadWeek(weekStart) {
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.get(weekStart);
+
+            request.onsuccess = function(e) {
+                let data = e.target.result;
+
+                if (!data) {
+                    data = createEmptyWeek(weekStart);
+                    console.log('[i] 새 주차 생성:', weekStart);
+                }
+
+                renderInputTable(data);
+                renderViewTable(data);
+                updateWeekDisplay();
+            };
+
+            request.onerror = function(e) {
+                console.error('로드 실패:', e.target.error);
+                logError('Load Error', '주차 데이터 로드 실패', e.target.error.message);
+            };
+        }
+
+        function renderHeaders(weekStart) {
+            const startDate = parseDate(weekStart);
+
+            for (let i = 0; i < 7; i++) {
+                const date = new Date(startDate);
+                date.setDate(date.getDate() + i);
+
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                const dayName = DAYS[i];
+
+                const isToday = formatDate(date) === formatDate(new Date());
+                const todayClass = isToday ? 'bg-yellow-300 text-yellow-900' : '';
+
+                const headerText = `${month}/${day}<br/>(${dayName})`;
+
+                const inputHeader = document.getElementById('day' + i);
+                if (inputHeader) {
+                    inputHeader.innerHTML = headerText;
+                    if (isToday) {
+                        inputHeader.className = `p-2 md:p-3 border-r border-green-300 min-w-[100px] text-xs md:text-sm ${todayClass}`;
+                    }
+                }
+
+                const viewHeader = document.getElementById('vday' + i);
+                if (viewHeader) {
+                    viewHeader.innerHTML = headerText;
+                    if (isToday) {
+                        viewHeader.className = `p-2 md:p-3 border-r border-blue-300 min-w-[100px] text-xs md:text-sm ${todayClass}`;
+                    }
+                }
+            }
+        }
+
+        function formatCellPreview(cell) {
+            if (!cell || !cell.company) return '';
+
+            const statusInfo = STATUS_MAP[cell.status] || STATUS_MAP.SCHEDULED;
+
+            let html = `<div class="text-xs space-y-1">`;
+            html += `<div class="font-bold text-sm ${statusInfo.color} px-2 py-1 rounded-lg border-2 inline-block mb-1">${statusInfo.name}</div><br/>`;
+            html += `<div class="font-bold text-blue-600">${cell.company}</div>`;
+            if (cell.loading) html += `<div class="text-gray-600">📍 ${cell.loading}</div>`;
+            if (cell.time) html += `<div class="text-purple-600">🕐 ${cell.time}</div>`;
+            if (cell.bang) html += `<div class="text-orange-600">🚛 ${cell.bang}</div>`;
+            if (cell.jip) html += `<div class="text-cyan-600">🏗️ ${cell.jip}</div>`;
+            html += `</div>`;
+            return html;
+        }
+
+        function renderInputTable(data) {
+            renderHeaders(data.weekStart);
+
+            const tbody = document.getElementById('inputTableBody');
+            tbody.innerHTML = '';
+
+            for (let rowIdx = 0; rowIdx < data.rows.length; rowIdx++) {
+                const tr = document.createElement('tr');
+
+                for (let colIdx = 0; colIdx < 7; colIdx++) {
+                    const td = document.createElement('td');
+                    td.className = 'border border-gray-200 p-2 relative';
+
+                    const cell = data.rows[rowIdx][colIdx];
+                    const hasContent = cell && cell.company;
+
+                    const cellId = `cell-${rowIdx}-${colIdx}`;
+                    td.innerHTML = `
+                        <div id="${cellId}" class="cell-preview ${hasContent ? 'has-content' : ''} cursor-pointer p-3 rounded-xl border-2 ${hasContent ? 'border-green-400' : 'border-gray-300'} hover:shadow-lg transition relative"
+                             onclick="openPivotModal(${rowIdx}, ${colIdx})">
+                            ${formatCellPreview(cell)}
+
+                            <div class="cell-move-controls absolute top-1 right-1 flex gap-1"
+                                 style="opacity: 0; pointer-events: none; transition: opacity 0.2s;">
+                                <button onclick="event.stopPropagation(); moveCell(${rowIdx}, ${colIdx}, -1)"
+                                        class="move-btn bg-blue-500 text-white w-6 h-6 rounded-full text-xs font-bold hover:bg-blue-600 shadow-lg"
+                                        ${rowIdx === 0 ? 'disabled style="opacity: 0.3;"' : ''}>↑</button>
+                                <button onclick="event.stopPropagation(); moveCell(${rowIdx}, ${colIdx}, 1)"
+                                        class="move-btn bg-blue-500 text-white w-6 h-6 rounded-full text-xs font-bold hover:bg-blue-600 shadow-lg"
+                                        ${rowIdx === data.rows.length - 1 ? 'disabled style="opacity: 0.3;"' : ''}>↓</button>
+                                ${hasContent ? `<button onclick="event.stopPropagation(); deleteCell(${rowIdx}, ${colIdx})"
+                                        class="delete-btn bg-red-500 text-white w-6 h-6 rounded-full text-xs font-bold hover:bg-red-600 shadow-lg">×</button>` : ''}
+                            </div>
+                        </div>
+                    `;
+
+                    tr.appendChild(td);
+                }
+
+                tbody.appendChild(tr);
+            }
+
+            setTimeout(() => {
+                for (let rowIdx = 0; rowIdx < data.rows.length; rowIdx++) {
+                    for (let colIdx = 0; colIdx < 7; colIdx++) {
+                        const cellId = `cell-${rowIdx}-${colIdx}`;
+                        const cellElement = document.getElementById(cellId);
+                        if (!cellElement) continue;
+
+                        const controls = cellElement.querySelector('.cell-move-controls');
+                        if (!controls) continue;
+
+                        cellElement.addEventListener('mouseenter', function() {
+                            controls.style.opacity = '1';
+                            controls.style.pointerEvents = 'auto';
+                        });
+
+                        cellElement.addEventListener('mouseleave', function() {
+                            controls.style.opacity = '0';
+                            controls.style.pointerEvents = 'none';
+                        });
+
+                        let touchTimer = null;
+                        let touchMoved = false;
+
+                        cellElement.addEventListener('touchstart', function(e) {
+                            touchMoved = false;
+
+                            touchTimer = setTimeout(() => {
+                                if (!touchMoved) {
+                                    controls.style.opacity = '1';
+                                    controls.style.pointerEvents = 'auto';
+
+                                    if (navigator.vibrate) {
+                                        navigator.vibrate(50);
+                                    }
+
+                                    setTimeout(() => {
+                                        controls.style.opacity = '0';
+                                        controls.style.pointerEvents = 'none';
+                                    }, 3000);
+                                }
+                            }, 500);
+                        }, { passive: true });
+
+                        cellElement.addEventListener('touchmove', function() {
+                            touchMoved = true;
+                            clearTimeout(touchTimer);
+                        }, { passive: true });
+
+                        cellElement.addEventListener('touchend', function() {
+                            clearTimeout(touchTimer);
+                        }, { passive: true });
+                    }
+                }
+            }, 100);
+        }
+
+        function renderViewTable(data) {
+            renderHeaders(data.weekStart);
+
+            const tbody = document.getElementById('viewTableBody');
+            tbody.innerHTML = '';
+
+            for (let rowIdx = 0; rowIdx < data.rows.length; rowIdx++) {
+                const tr = document.createElement('tr');
+
+                for (let colIdx = 0; colIdx < 7; colIdx++) {
+                    const td = document.createElement('td');
+                    td.className = 'border border-gray-200 p-2';
+
+                    const cell = data.rows[rowIdx][colIdx];
+                    const hasContent = cell && cell.company;
+
+                    td.innerHTML = `
+                        <div class="cell-preview ${hasContent ? 'has-content' : ''} cursor-pointer p-3 rounded-xl border-2 ${hasContent ? 'border-green-400' : 'border-gray-300'} hover:shadow-lg transition"
+                             onclick='showFocusView(${JSON.stringify(cell)}, "${data.weekStart}", ${colIdx})'>
+                            ${formatCellPreview(cell)}
+                        </div>
+                    `;
+
+                    tr.appendChild(td);
+                }
+
+                tbody.appendChild(tr);
+            }
+        }
+
+        function openPivotModal(row, col) {
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.get(currentWeekStart);
+
+            request.onsuccess = function(e) {
+                const data = e.target.result || createEmptyWeek(currentWeekStart);
+                const cell = data.rows[row][col];
+
+                syncState(currentWeekStart, row, col);
+
+                const startDate = parseDate(currentWeekStart);
+                const cellDate = new Date(startDate);
+                cellDate.setDate(cellDate.getDate() + col);
+
+                pivotSelection = {
+                    company: cell.company || '',
+                    loading: cell.loading || '',
+                    time: cell.time || '',
+                    bang: cell.bang || '',
+                    jip: cell.jip || '',
+                    contact: cell.contact || '',
+                    notes: cell.notes || '',
+                    status: cell.status || 'SCHEDULED'
+                };
+
+                document.getElementById('pivotCompany').value = pivotSelection.company;
+                document.getElementById('pivotLoading').value = pivotSelection.loading;
+                document.getElementById('pivotTimeInput').value = pivotSelection.time;
+                document.getElementById('pivotContact').value = pivotSelection.contact;
+                document.getElementById('pivotNotes').value = pivotSelection.notes;
+                document.getElementById('pivotDate').value = formatDate(cellDate);
+                document.getElementById('pivotStatus').value = pivotSelection.status;
+
+                renderPivotModal();
+                updatePivotPreview();
+
+                document.getElementById('pivotModal').classList.remove('hidden');
+                document.getElementById('pivotModal').classList.add('flex');
+            };
+
+            request.onerror = function(e) {
+                console.error('모달 열기 실패:', e.target.error);
+                logError('Modal Error', '피벗 모달 열기 실패', e.target.error.message);
+            };
+        }
+
+        function openPivotModalForDate() {
+            const dateInput = document.getElementById('specificDate');
+            if (!dateInput.value) {
+                alert('날짜를 선택해주세요.');
+                return;
+            }
+
+            const selectedDate = parseDate(dateInput.value);
+            const newWeekStart = formatDate(getWeekStart(selectedDate));
+            const col = selectedDate.getDay();
+
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.get(newWeekStart);
+
+            request.onsuccess = function(e) {
+                let data = e.target.result;
+
+                if (!data) {
+                    data = createEmptyWeek(newWeekStart);
+                    saveToIDB(data).then(() => {
+                        console.log('[✓ 새 주차 생성 및 저장:', newWeekStart + ']');
+                    });
+                }
+
+                let targetRow = -1;
+                for (let r = 0; r < data.rows.length; r++) {
+                    if (!data.rows[r][col].company) {
+                        targetRow = r;
+                        break;
+                    }
+                }
+
+                if (targetRow === -1) {
+                    data.rows.push(Array.from({length: 7}, () => ({})));
+                    targetRow = data.rows.length - 1;
+                    saveToIDB(data).then(() => {
+                        console.log('[✓ 행 추가 및 저장]');
+                    });
+                }
+
+                if (newWeekStart !== currentWeekStart) {
+                    currentWeekStart = newWeekStart;
+                    loadWeek(currentWeekStart);
+                    document.getElementById('weekPicker').value = getWeekInputValue(selectedDate);
+                    updateWeekDisplay();
+                }
+
+                setTimeout(() => {
+                    openPivotModal(targetRow, col);
+                }, 200);
+            };
+
+            request.onerror = function(e) {
+                console.error('날짜 입력 모달 실패:', e.target.error);
+                logError('Date Modal Error', '특정 날짜 피벗 열기 실패', e.target.error.message);
+            };
+        }
+
+        function closePivotModal() {
+            document.getElementById('pivotModal').classList.add('hidden');
+            document.getElementById('pivotModal').classList.remove('flex');
+
+            pivotSelection = {
+                company: '', loading: '', time: '', bang: '', jip: '',
+                contact: '', notes: '', date: '', status: 'SCHEDULED'
+            };
+        }
+
+        function applyAndSave() {
+            updatePivotPreview();
+
+            if (!pivotSelection.company.trim()) {
+                alert('업체명은 필수입니다.');
+                return;
+            }
+
+            const newDate = document.getElementById('pivotDate').value;
+            if (!newDate) {
+                alert('날짜를 선택해주세요.');
+                return;
+            }
+
+            const selectedDate = parseDate(newDate);
+            const newWeekStart = formatDate(getWeekStart(selectedDate));
+            const newCol = selectedDate.getDay();
+
+            const newCellData = {
+                company: pivotSelection.company,
+                loading: pivotSelection.loading,
+                time: pivotSelection.time,
+                bang: pivotSelection.bang,
+                jip: pivotSelection.jip,
+                contact: pivotSelection.contact,
+                notes: pivotSelection.notes,
+                author: writer.name,
+                status: pivotSelection.status
+            };
+
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const currentRequest = store.get(currentWeekStart);
+
+            currentRequest.onsuccess = function(e) {
+                let data = e.target.result || createEmptyWeek(currentWeekStart);
+
+                if (currentWeekStart === newWeekStart) {
+                    if (currentRow >= 0 && currentCol >= 0) {
+                        if (currentRow === -1 || currentCol !== newCol) {
+                            let targetRow = -1;
+                            for (let r = 0; r < data.rows.length; r++) {
+                                if (!data.rows[r][newCol].company) {
+                                    targetRow = r;
+                                    break;
+                                }
+                            }
+
+                            if (targetRow === -1) {
+                                data.rows.push(Array.from({length: 7}, () => ({})));
+                                targetRow = data.rows.length - 1;
+                            }
+
+                            if (currentRow >= 0 && currentCol >= 0) {
+                                data.rows[currentRow][currentCol] = {};
+                            }
+
+                            data.rows[targetRow][newCol] = newCellData;
+                            syncState(currentWeekStart, targetRow, newCol);
+                        } else {
+                            data.rows[currentRow][currentCol] = newCellData;
+                            syncState(currentWeekStart, currentRow, currentCol);
+                        }
+                    } else {
+                        let targetRow = -1;
+                        for (let r = 0; r < data.rows.length; r++) {
+                            if (!data.rows[r][newCol].company) {
+                                targetRow = r;
+                                break;
+                            }
+                        }
+
+                        if (targetRow === -1) {
+                            data.rows.push(Array.from({length: 7}, () => ({})));
+                            targetRow = data.rows.length - 1;
+                        }
+
+                        data.rows[targetRow][newCol] = newCellData;
+                        syncState(currentWeekStart, targetRow, newCol);
+                    }
+
+                    saveToIDB(data).then(() => {
+                        loadWeek(currentWeekStart);
+                        closePivotModal();
+                        showToast('✅ 저장되었습니다');
+                    }).catch(err => {
+                        console.error('저장 실패:', err);
+                        alert('저장에 실패했습니다.');
+                    });
+                } else {
+                    if (currentRow >= 0 && currentCol >= 0) {
+                        data.rows[currentRow][currentCol] = {};
+                        saveToIDB(data);
+                    }
+
+                    const newRequest = store.get(newWeekStart);
+
+                    newRequest.onsuccess = function(e2) {
+                        let newData = e2.target.result || createEmptyWeek(newWeekStart);
+
+                        let targetRow = -1;
+                        for (let r = 0; r < newData.rows.length; r++) {
+                            if (!newData.rows[r][newCol].company) {
+                                targetRow = r;
+                                break;
+                            }
+                        }
+
+                        if (targetRow === -1) {
+                            newData.rows.push(Array.from({length: 7}, () => ({})));
+                            targetRow = newData.rows.length - 1;
+                        }
+
+                        newData.rows[targetRow][newCol] = newCellData;
+
+                        saveToIDB(newData).then(() => {
+                            syncState(newWeekStart, targetRow, newCol);
+                            currentWeekStart = newWeekStart;
+
+                            document.getElementById('weekPicker').value = getWeekInputValue(selectedDate);
+                            loadWeek(currentWeekStart);
+                            closePivotModal();
+                            showToast('✅ 저장되었습니다');
+                        }).catch(err => {
+                            console.error('새 주차 저장 실패:', err);
+                            alert('저장에 실패했습니다.');
+                        });
+                    };
+                }
+            };
+
+            currentRequest.onerror = function(e) {
+                console.error('저장 프로세스 실패:', e.target.error);
+                logError('Save Process Error', 'applyAndSave 실패', e.target.error.message);
+                alert('저장 프로세스에 실패했습니다.');
+            };
+        }
+
+        function moveCell(row, col, direction) {
+            const targetRow = row + direction;
+
+            const store = getStore('readwrite');
+            if (!store) return;
+
+            const request = store.get(currentWeekStart);
+
+            request.onsuccess = function(e) {
+                const data = e.target.result;
+                if (!data) return;
+
+                if (targetRow < 0 || targetRow >= data.rows.length) {
+                    showToast('⚠️ 이동할 수 없습니다');
+                    return;
+                }
+
+                const temp = data.rows[row][col];
+                data.rows[row][col] = data.rows[targetRow][col];
+                data.rows[targetRow][col] = temp;
+
+                saveToIDB(data).then(() => {
+                    loadWeek(currentWeekStart);
+                    showToast('✅ 이동되었습니다');
+                });
+            };
+        }
+
+        function deleteCell(row, col) {
+            if (!confirm('이 배차 정보를 삭제하시겠습니까?')) {
+                return;
+            }
+
+            const store = getStore('readwrite');
+            if (!store) return;
+
+            const request = store.get(currentWeekStart);
+
+            request.onsuccess = function(e) {
+                const data = e.target.result;
+                if (!data) return;
+
+                data.rows[row][col] = {};
+
+                saveToIDB(data).then(() => {
+                    loadWeek(currentWeekStart);
+                    showToast('✅ 삭제되었습니다');
+                });
+            };
+        }
+
+        function showFocusView(cell, weekStart, colIdx) {
+            if (!cell || !cell.company) return;
+
+            const startDate = parseDate(weekStart);
+            const cellDate = new Date(startDate);
+            cellDate.setDate(cellDate.getDate() + colIdx);
+
+            const statusInfo = STATUS_MAP[cell.status] || STATUS_MAP.SCHEDULED;
+
+            const headerHtml = `
+                <div class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white">
+                    <h3 class="text-2xl font-black mb-2">${cell.company}</h3>
+                    <p class="text-sm opacity-90">${formatDate(cellDate)} (${DAYS[colIdx]})</p>
+                </div>
+            `;
+
+            let bodyHtml = '<div class="space-y-3">';
+
+            bodyHtml += `<div class="p-3 rounded-lg ${statusInfo.color} border-2">
+                <span class="font-bold">배차 상태:</span> ${statusInfo.name}
+            </div>`;
+
+            if (cell.loading) {
+                bodyHtml += `<div class="p-3 bg-green-50 rounded-lg border-2 border-green-200">
+                    <span class="font-bold">상차지:</span> ${cell.loading}
+                </div>`;
+            }
+
+            if (cell.time) {
+                bodyHtml += `<div class="p-3 bg-purple-50 rounded-lg border-2 border-purple-200">
+                    <span class="font-bold">시간:</span> ${cell.time}
+                </div>`;
+            }
+
+            if (cell.bang) {
+                bodyHtml += `<div class="p-3 bg-orange-50 rounded-lg border-2 border-orange-200">
+                    <span class="font-bold">방통차:</span> ${cell.bang}
+                </div>`;
+            }
+
+            if (cell.jip) {
+                bodyHtml += `<div class="p-3 bg-cyan-50 rounded-lg border-2 border-cyan-200">
+                    <span class="font-bold">집게차:</span> ${cell.jip}
+                </div>`;
+            }
+
+            if (cell.contact) {
+                bodyHtml += `<div class="p-3 bg-pink-50 rounded-lg border-2 border-pink-200">
+                    <span class="font-bold">연락처:</span> ${cell.contact}
+                </div>`;
+            }
+
+            if (cell.notes) {
+                bodyHtml += `<div class="p-3 bg-amber-50 rounded-lg border-2 border-amber-200">
+                    <span class="font-bold">특이사항:</span> ${cell.notes}
+                </div>`;
+            }
+
+            if (cell.author) {
+                bodyHtml += `<div class="p-3 bg-gray-50 rounded-lg border-2 border-gray-200">
+                    <span class="font-bold">작성자:</span> ${cell.author}
+                </div>`;
+            }
+
+            bodyHtml += '</div>';
+
+            document.getElementById('focusViewHeader').innerHTML = headerHtml;
+            document.getElementById('focusViewBody').innerHTML = bodyHtml;
+
+            const focusView = document.getElementById('focusView');
+            focusView.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeFocusView() {
+            const focusView = document.getElementById('focusView');
+            focusView.classList.add('hidden');
+            document.body.style.overflow = 'auto';
+        }
+
+        function renderPivotModal() {
+            const bangCount = parseInt(localStorage.getItem('bangCount') || '5');
+            const jipCount = parseInt(localStorage.getItem('jipCount') || '3');
+
+            let bangOptions = '<option value="">선택안함</option>';
+            for (let i = 1; i <= bangCount; i++) {
+                const selected = pivotSelection.bang === `방${i}` ? 'selected' : '';
+                bangOptions += `<option value="방${i}" ${selected}>방${i}</option>`;
+            }
+            document.getElementById('bangSelect').innerHTML = bangOptions;
+
+            let jipOptions = '<option value="">선택안함</option>';
+            for (let i = 1; i <= jipCount; i++) {
+                const selected = pivotSelection.jip === `집${i}` ? 'selected' : '';
+                jipOptions += `<option value="집${i}" ${selected}>집${i}</option>`;
+            }
+            document.getElementById('jipSelect').innerHTML = jipOptions;
+
+            let companiesHtml = '';
+            COMPANIES.forEach(c => {
+                companiesHtml += `
+                    <span class="chip" onclick="selectPivot('company', '${c}')">
+                        ${c}
+                        <button onclick="event.stopPropagation(); removeFromList('company', '${c}')">×</button>
+                    </span>
+                `;
+            });
+            document.getElementById('companiesChips').innerHTML = companiesHtml;
+
+            let loadingsHtml = '';
+            LOADINGS.forEach(l => {
+                loadingsHtml += `
+                    <span class="chip" onclick="selectPivot('loading', '${l}')">
+                        ${l}
+                        <button onclick="event.stopPropagation(); removeFromList('loading', '${l}')">×</button>
+                    </span>
+                `;
+            });
+            document.getElementById('loadingsChips').innerHTML = loadingsHtml;
+        }
+
+        function selectPivot(field, value) {
+            if (field === 'company') {
+                document.getElementById('pivotCompany').value = value;
+                pivotSelection.company = value;
+            } else if (field === 'loading') {
+                document.getElementById('pivotLoading').value = value;
+                pivotSelection.loading = value;
+            } else if (field === 'bang') {
+                pivotSelection.bang = value;
+            } else if (field === 'jip') {
+                pivotSelection.jip = value;
+            }
+            updatePivotPreview();
+        }
+
+        function saveCompanyToList() {
+            const company = document.getElementById('pivotCompany').value.trim();
+            if (!company) {
+                alert('업체명을 입력해주세요.');
+                return;
+            }
+
+            if (COMPANIES.includes(company)) {
+                showToast('⚠️ 이미 목록에 있습니다');
+                return;
+            }
+
+            if (COMPANIES.length >= MAX_COMPANIES) {
+                showToast('⚠️ 최대 10개까지만 저장할 수 있습니다');
+                return;
+            }
+
+            COMPANIES.push(company);
+            localStorage.setItem('companyList', JSON.stringify(COMPANIES));
+            renderPivotModal();
+            showToast('✅ 목록에 추가되었습니다');
+        }
+
+        function saveLoadingToList() {
+            const loading = document.getElementById('pivotLoading').value.trim();
+            if (!loading) {
+                alert('상차지를 입력해주세요.');
+                return;
+            }
+
+            if (LOADINGS.includes(loading)) {
+                showToast('⚠️ 이미 목록에 있습니다');
+                return;
+            }
+
+            if (LOADINGS.length >= MAX_LOADINGS) {
+                showToast('⚠️ 최대 10개까지만 저장할 수 있습니다');
+                return;
+            }
+
+            LOADINGS.push(loading);
+            localStorage.setItem('loadingList', JSON.stringify(LOADINGS));
+            renderPivotModal();
+            showToast('✅ 목록에 추가되었습니다');
+        }
+
+        function removeFromList(type, value) {
+            if (type === 'company') {
+                COMPANIES = COMPANIES.filter(c => c !== value);
+                localStorage.setItem('companyList', JSON.stringify(COMPANIES));
+            } else if (type === 'loading') {
+                LOADINGS = LOADINGS.filter(l => l !== value);
+                localStorage.setItem('loadingList', JSON.stringify(LOADINGS));
+            }
+            renderPivotModal();
+            showToast('✅ 목록에서 제거되었습니다');
+        }
+
+        function updateWeekDisplay() {
+            const date = parseDate(currentWeekStart);
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1;
+            const onejan = new Date(year, 0, 1);
+            const weekNum = Math.ceil((((date - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+
+            document.getElementById('weekDisplay').textContent = `${year}년 ${month}월 ${weekNum}주차`;
+
+            const endDate = new Date(date);
+            endDate.setDate(endDate.getDate() + 6);
+
+            document.getElementById('weekRange').textContent =
+                `${month}/${date.getDate()} ~ ${endDate.getMonth()+1}/${endDate.getDate()}`;
+        }
+
+        function navigateWeek(offset) {
+            const current = parseDate(currentWeekStart);
+            current.setDate(current.getDate() + (offset * 7));
+            currentWeekStart = formatDate(getWeekStart(current));
+
+            loadWeek(currentWeekStart);
+            document.getElementById('weekPicker').value = getWeekInputValue(current);
+        }
+
+        function goToToday() {
+            const today = new Date();
+            currentWeekStart = formatDate(getWeekStart(today));
+
+            loadWeek(currentWeekStart);
+            document.getElementById('weekPicker').value = getWeekInputValue(today);
+            updateWeekDisplay();
+            showToast('✅ 이번 주로 이동했습니다');
+        }
+
+        function changeWeek(weekValue) {
+            if (!weekValue) return;
+
+            const parts = weekValue.split('-W');
+            const year = parseInt(parts[0]);
+            const week = parseInt(parts[1]);
+
+            const jan1 = new Date(year, 0, 1);
+            const days = (week - 1) * 7;
+            const target = new Date(year, 0, 1 + days);
+
+            currentWeekStart = formatDate(getWeekStart(target));
+            loadWeek(currentWeekStart);
+            updateWeekDisplay();
+        }
+
+        function showPage(page) {
+            const viewPage = document.getElementById('viewPage');
+            const inputPage = document.getElementById('inputPage');
+            const btnView = document.getElementById('btnView');
+            const btnInput = document.getElementById('btnInput');
+
+            if (page === 'view') {
+                viewPage.classList.remove('hidden');
+                inputPage.classList.add('hidden');
+
+                btnView.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition shadow-lg bg-gradient-to-r from-blue-500 to-indigo-600 text-white';
+                btnInput.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition bg-gray-200 text-gray-700';
+            } else {
+                viewPage.classList.add('hidden');
+                inputPage.classList.remove('hidden');
+
+                btnView.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition bg-gray-200 text-gray-700';
+                btnInput.className = 'flex-1 py-3 md:py-4 rounded-xl font-black text-base md:text-lg transition shadow-lg bg-gradient-to-r from-green-500 to-emerald-600 text-white';
+            }
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hidden');
+
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        function loadWriter() {
+            const name = localStorage.getItem('writerName');
+            const pin = localStorage.getItem('writerPin');
+
+            if (name && pin) {
+                writer = { name, pin };
+                document.getElementById('writerName').textContent = name;
+                document.getElementById('writerNameMobile').textContent = name;
+            } else {
+                writer = { name: '미인증', pin: '' };
+                document.getElementById('writerName').textContent = '미인증';
+                document.getElementById('writerNameMobile').textContent = '미인증';
+            }
+        }
+
+        function showWriterModal() {
+            document.getElementById('writerNameInput').value = writer.name === '미인증' ? '' : writer.name;
+            document.getElementById('writerPassInput').value = '';
+
+            document.getElementById('writerModal').classList.remove('hidden');
+            document.getElementById('writerModal').classList.add('flex');
+        }
+
+        function closeWriterModal() {
+            document.getElementById('writerModal').classList.add('hidden');
+            document.getElementById('writerModal').classList.remove('flex');
+        }
+
+        function saveWriter() {
+            const name = document.getElementById('writerNameInput').value.trim();
+            const pin = document.getElementById('writerPassInput').value.trim();
+
+            if (!name) {
+                alert('이름을 입력해주세요.');
+                return;
+            }
+
+            if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+                alert('비밀번호는 4자리 숫자여야 합니다.');
+                return;
+            }
+
+            writer = { name, pin };
+            localStorage.setItem('writerName', name);
+            localStorage.setItem('writerPin', pin);
+
+            document.getElementById('writerName').textContent = name;
+            document.getElementById('writerNameMobile').textContent = name;
+
+            logAccess();
+            loadWeek(currentWeekStart);
+            closeWriterModal();
+            showToast('✅ 인증되었습니다');
+        }
+
+        function logout() {
+            if (!confirm('로그아웃 하시겠습니까?')) {
+                return;
+            }
+
+            localStorage.removeItem('writerName');
+            localStorage.removeItem('writerPin');
+
+            writer = { name: '미인증', pin: '' };
+            document.getElementById('writerName').textContent = '미인증';
+            document.getElementById('writerNameMobile').textContent = '미인증';
+
+            closeWriterModal();
+            showToast('✅ 로그아웃 되었습니다');
+        }
+
+        function logAccess() {
+            if (!db || writer.name === '미인증') return;
+
+            try {
+                const tx = db.transaction(LOG_STORE, 'readwrite');
+                const store = tx.objectStore(LOG_STORE);
+
+                const log = {
+                    timestamp: new Date().toISOString(),
+                    user: writer.name,
+                    userType: writer.pin ? '인증' : '일반',
+                    deviceInfo: navigator.userAgent,
+                    platform: navigator.platform,
+                    language: navigator.language
+                };
+
+                const request = store.add(log);
+
+                request.onsuccess = function() {
+                    console.log('[✓ 접속 로그 기록]');
+                    cleanupOldLogs(LOG_STORE);
+                };
+
+                request.onerror = function(e) {
+                    console.error('접속 로그 기록 실패:', e.target.error);
+                };
+            } catch(e) {
+                console.error('logAccess error:', e);
+            }
+        }
+
+        function logError(type, message, details = '') {
+            if (!db) return;
+
+            try {
+                const tx = db.transaction(ERROR_STORE, 'readwrite');
+                const store = tx.objectStore(ERROR_STORE);
+
+                const errorLog = {
+                    timestamp: new Date().toISOString(),
+                    type: type,
+                    message: message,
+                    details: details,
+                    user: writer.name
+                };
+
+                const request = store.add(errorLog);
+
+                request.onsuccess = function() {
+                    console.log('[✓ 에러 로그 기록]');
+                    cleanupOldLogs(ERROR_STORE);
+                };
+
+                request.onerror = function(e) {
+                    console.error('에러 로그 기록 실패:', e.target.error);
+                };
+            } catch(e) {
+                console.error('logError error:', e);
+            }
+        }
+
+        function cleanupOldLogs(storeName) {
+            return new Promise((resolve, reject) => {
+                try {
+                    const tx = db.transaction(storeName, 'readwrite');
+                    const store = tx.objectStore(storeName);
+                    const index = store.index('timestamp');
+
+                    const allRequest = index.openCursor(null, 'prev');
+                    let count = 0;
+                    const toDelete = [];
+
+                    allRequest.onsuccess = function(e) {
+                        const cursor = e.target.result;
+
+                        if (cursor) {
+                            count++;
+                            if (count > MAX_LOGS) {
+                                toDelete.push(cursor.primaryKey);
+                            }
+                            cursor.continue();
+                        } else {
+                            toDelete.forEach(id => {
+                                store.delete(id);
+                            });
+
+                            if (toDelete.length > 0) {
+                                console.log(`[✓ 오래된 로그 ${toDelete.length}개 삭제]`);
+                            }
+                            resolve(toDelete.length);
+                        }
+                    };
+
+                    allRequest.onerror = function(e) {
+                        console.error('로그 정리 실패:', e.target.error);
+                        reject(e.target.error);
+                    };
+                } catch(e) {
+                    console.error('cleanupOldLogs error:', e);
+                    reject(e);
+                }
+            });
+        }
+
+        function showAccessLog() {
+            if (writer.name === '미인증') {
+                alert('인증이 필요합니다.');
+                return;
+            }
+
+            try {
+                const tx = db.transaction(LOG_STORE, 'readonly');
+                const store = tx.objectStore(LOG_STORE);
+                const index = store.index('timestamp');
+
+                const request = index.openCursor(null, 'prev');
+                const logs = [];
+
+                request.onsuccess = function(e) {
+                    const cursor = e.target.result;
+
+                    if (cursor) {
+                        logs.push(cursor.value);
+                        cursor.continue();
+                    } else {
+                        displayAccessLogs(logs);
+                    }
+                };
+
+                request.onerror = function(e) {
+                    console.error('로그 조회 실패:', e.target.error);
+                    alert('로그를 불러오는데 실패했습니다.');
+                };
+            } catch(e) {
+                console.error('showAccessLog error:', e);
+                alert('로그 조회 중 오류가 발생했습니다.');
+            }
+        }
+
+        function displayAccessLogs(logs) {
+            let html = `
+                <div class="fixed inset-0 bg-black bg-opacity-60 modal-backdrop flex items-center justify-center z-50 p-3">
+                    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto modal-content">
+                        <div class="sticky top-0 bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-4 md:p-6 rounded-t-3xl z-10">
+                            <div class="flex justify-between items-center">
+                                <h3 class="text-xl md:text-2xl font-black">접속 로그 (${logs.length}건)</h3>
+                                <button onclick="this.closest('.modal-backdrop').remove()" class="text-2xl md:text-3xl hover:text-gray-200 transition">×</button>
+                            </div>
+                        </div>
+                        <div class="p-4 md:p-6">
+            `;
+
+            if (logs.length === 0) {
+                html += '<p class="text-center text-gray-500 py-8">로그가 없습니다.</p>';
+            } else {
+                logs.forEach(log => {
+                    const date = new Date(log.timestamp);
+                    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+
+                    html += `
+                        <div class="mb-3 p-4 bg-gray-50 rounded-xl border-2 border-gray-200">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="font-bold text-lg text-blue-600">${log.user}</span>
+                                <span class="text-xs text-gray-500">${dateStr}</span>
+                            </div>
+                            <div class="text-sm text-gray-600 space-y-1">
+                                <div><span class="font-bold">유형:</span> ${log.userType}</div>
+                                <div><span class="font-bold">플랫폼:</span> ${log.platform}</div>
+                                <div><span class="font-bold">언어:</span> ${log.language}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.body.insertAdjacentHTML('beforeend', html);
+        }
+
+        function showBugReport() {
+            if (writer.name === '미인증') {
+                alert('인증이 필요합니다.');
+                return;
+            }
+
+            try {
+                const tx = db.transaction(ERROR_STORE, 'readonly');
+                const store = tx.objectStore(ERROR_STORE);
+                const index = store.index('timestamp');
+
+                const request = index.openCursor(null, 'prev');
+                const errors = [];
+
+                request.onsuccess = function(e) {
+                    const cursor = e.target.result;
+
+                    if (cursor) {
+                        errors.push(cursor.value);
+                        cursor.continue();
+                    } else {
+                        displayBugReport(errors);
+                    }
+                };
+
+                request.onerror = function(e) {
+                    console.error('에러 로그 조회 실패:', e.target.error);
+                    alert('에러 로그를 불러오는데 실패했습니다.');
+                };
+            } catch(e) {
+                console.error('showBugReport error:', e);
+                alert('에러 로그 조회 중 오류가 발생했습니다.');
+            }
+        }
+
+        function displayBugReport(errors) {
+            let html = `
+                <div class="fixed inset-0 bg-black bg-opacity-60 modal-backdrop flex items-center justify-center z-50 p-3">
+                    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto modal-content">
+                        <div class="sticky top-0 bg-gradient-to-r from-red-600 to-pink-700 text-white p-4 md:p-6 rounded-t-3xl z-10">
+                            <div class="flex justify-between items-center">
+                                <h3 class="text-xl md:text-2xl font-black">버그 리포트 (${errors.length}건)</h3>
+                                <button onclick="this.closest('.modal-backdrop').remove()" class="text-2xl md:text-3xl hover:text-gray-200 transition">×</button>
+                            </div>
+                        </div>
+                        <div class="p-4 md:p-6">
+            `;
+
+            if (errors.length === 0) {
+                html += '<p class="text-center text-gray-500 py-8">에러가 없습니다.</p>';
+            } else {
+                errors.forEach(err => {
+                    const date = new Date(err.timestamp);
+                    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+
+                    html += `
+                        <div class="mb-3 p-4 bg-red-50 rounded-xl border-2 border-red-200">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="font-bold text-lg text-red-600">${err.type}</span>
+                                <span class="text-xs text-gray-500">${dateStr}</span>
+                            </div>
+                            <div class="text-sm text-gray-700 space-y-1">
+                                <div><span class="font-bold">메시지:</span> ${err.message}</div>
+                                ${err.details ? `<div><span class="font-bold">상세:</span> ${err.details}</div>` : ''}
+                                <div><span class="font-bold">사용자:</span> ${err.user}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.body.insertAdjacentHTML('beforeend', html);
+        }
+
+        function showSearchModal() {
+            const today = formatDate(new Date());
+            document.getElementById('searchStartDate').value = today;
+            document.getElementById('searchEndDate').value = today;
+            document.getElementById('searchInput').value = '';
+            document.getElementById('searchResults').innerHTML = '';
+
+            document.getElementById('searchModal').classList.remove('hidden');
+            document.getElementById('searchModal').classList.add('flex');
+        }
+
+        function closeSearchModal() {
+            document.getElementById('searchModal').classList.add('hidden');
+            document.getElementById('searchModal').classList.remove('flex');
+        }
+
+        function performSearch() {
+            const keyword = document.getElementById('searchInput').value.trim().toLowerCase();
+            const startDate = document.getElementById('searchStartDate').value;
+            const endDate = document.getElementById('searchEndDate').value;
+
+            if (!startDate || !endDate) {
+                document.getElementById('searchResults').innerHTML = '<p class="text-gray-500 text-center py-4">날짜 범위를 선택해주세요.</p>';
+                return;
+            }
+
+            const start = parseDate(startDate);
+            const end = parseDate(endDate + 'T23:59:59');
+
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.openCursor();
+            const results = [];
+
+            request.onsuccess = function(e) {
+                const cursor = e.target.result;
+
+                if (cursor) {
+                    const weekData = cursor.value;
+                    const weekStartDate = parseDate(weekData.weekStart);
+
+                    weekData.rows.forEach((row, rowIdx) => {
+                        row.forEach((cell, colIdx) => {
+                            if (!cell.company) return;
+
+                            const cellDate = new Date(weekStartDate);
+                            cellDate.setDate(cellDate.getDate() + colIdx);
+
+                            const searchText = `${cell.company || ''} ${cell.loading || ''} ${cell.author || ''}`.toLowerCase();
+
+                            if ((!keyword || searchText.includes(keyword)) && cellDate >= start && cellDate <= end) {
+                                results.push({
+                                    cell: cell,
+                                    date: formatDate(cellDate),
+                                    dayOfWeek: DAYS[colIdx],
+                                    weekStart: weekData.weekStart
+                                });
+                            }
+                        });
+                    });
+
+                    cursor.continue();
+                } else {
+                    displaySearchResults(results);
+                }
+            };
+
+            request.onerror = function(e) {
+                console.error('검색 실패:', e.target.error);
+                logError('Search Error', '검색 실패', e.target.error.message);
+                alert('검색 중 오류가 발생했습니다.');
+            };
+        }
+
+        function displaySearchResults(results) {
+            const container = document.getElementById('searchResults');
+
+            if (results.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center py-4">검색 결과가 없습니다.</p>';
+                return;
+            }
+
+            results.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            let html = `<div class="text-sm font-bold mb-3 text-gray-700">총 ${results.length}건</div>`;
+
+            results.forEach((result, idx) => {
+                const statusInfo = STATUS_MAP[result.cell.status] || STATUS_MAP.SCHEDULED;
+
+                html += `
+                    <div class="p-3 bg-white rounded-xl border-2 border-gray-200 hover:border-purple-400 cursor-pointer transition mb-2"
+                         onclick="goToSearchResult('${result.weekStart}', '${result.date}')">
+                        <div class="flex justify-between items-start mb-2">
+                            <span class="font-bold text-blue-600">${result.cell.company}</span>
+                            <span class="text-xs ${statusInfo.color} px-2 py-1 rounded-full">${statusInfo.name}</span>
+                        </div>
+                        <div class="text-xs text-gray-600 space-y-1">
+                            <div>📅 ${result.date} (${result.dayOfWeek})</div>
+                            ${result.cell.loading ? `<div>📍 ${result.cell.loading}</div>` : ''}
+                            ${result.cell.time ? `<div>🕐 ${result.cell.time}</div>` : ''}
+                            ${result.cell.bang ? `<div>🚛 ${result.cell.bang}</div>` : ''}
+                            ${result.cell.jip ? `<div>🏗️ ${result.cell.jip}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function goToSearchResult(weekStart, date) {
+            currentWeekStart = weekStart;
+            loadWeek(currentWeekStart);
+
+            const weekDate = parseDate(weekStart);
+            document.getElementById('weekPicker').value = getWeekInputValue(weekDate);
+            updateWeekDisplay();
+
+            closeSearchModal();
+            showPage('view');
+            showToast('✅ 해당 주로 이동했습니다');
+        }
+
+        function showExportModal() {
+            const today = formatDate(new Date());
+            document.getElementById('exportStartDate').value = today;
+            document.getElementById('exportEndDate').value = today;
+
+            document.getElementById('exportModal').classList.remove('hidden');
+            document.getElementById('exportModal').classList.add('flex');
+        }
+
+        function closeExportModal() {
+            document.getElementById('exportModal').classList.add('hidden');
+            document.getElementById('exportModal').classList.remove('flex');
+        }
+
+        function exportToCSV() {
+            const startDate = document.getElementById('exportStartDate').value;
+            const endDate = document.getElementById('exportEndDate').value;
+
+            if (!startDate || !endDate) {
+                alert('날짜 범위를 선택해주세요.');
+                return;
+            }
+
+            const start = parseDate(startDate);
+            const end = parseDate(endDate);
+
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.openCursor();
+            const rows = [];
+
+            rows.push(['날짜', '요일', '상태', '업체명', '상차지', '시간', '방통차', '집게차', '연락처', '특이사항', '작성자']);
+
+            request.onsuccess = function(e) {
+                const cursor = e.target.result;
+
+                if (cursor) {
+                    const weekData = cursor.value;
+                    const weekStartDate = parseDate(weekData.weekStart);
+
+                    weekData.rows.forEach((row, rowIdx) => {
+                        row.forEach((cell, colIdx) => {
+                            if (!cell.company || !cell.company.trim()) return;
+
+                            const cellDate = new Date(weekStartDate);
+                            cellDate.setDate(cellDate.getDate() + colIdx);
+
+                            if (cellDate >= start && cellDate <= end) {
+                                const statusInfo = STATUS_MAP[cell.status] || STATUS_MAP.SCHEDULED;
+
+                                rows.push([
+                                    formatDate(cellDate),
+                                    DAYS[colIdx],
+                                    statusInfo.name,
+                                    cell.company || '',
+                                    cell.loading || '',
+                                    cell.time || '',
+                                    cell.bang || '',
+                                    cell.jip || '',
+                                    cell.contact || '',
+                                    cell.notes || '',
+                                    cell.author || ''
+                                ]);
+                            }
+                        });
+                    });
+
+                    cursor.continue();
+                } else {
+                    if (rows.length === 1) {
+                        alert('내보낼 데이터가 없습니다.');
+                        return;
+                    }
+
+                    const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+                    const bom = '\uFEFF';
+                    const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `배차데이터_${startDate}_${endDate}.csv`;
+                    link.click();
+
+                    showToast('✅ CSV 파일이 다운로드되었습니다');
+                    closeExportModal();
+                }
+            };
+
+            request.onerror = function(e) {
+                console.error('CSV 내보내기 실패:', e.target.error);
+                logError('Export CSV Error', 'CSV 내보내기 실패', e.target.error.message);
+                alert('내보내기 중 오류가 발생했습니다.');
+            };
+        }
+
+        function exportToExcel() {
+            if (typeof XLSX === 'undefined') {
+                alert('Excel 라이브러리를 로드할 수 없습니다.');
+                return;
+            }
+
+            const startDate = document.getElementById('exportStartDate').value;
+            const endDate = document.getElementById('exportEndDate').value;
+
+            if (!startDate || !endDate) {
+                alert('날짜 범위를 선택해주세요.');
+                return;
+            }
+
+            const start = parseDate(startDate);
+            const end = parseDate(endDate);
+
+            const store = getStore('readonly');
+            if (!store) return;
+
+            const request = store.openCursor();
+            const data = [];
+
+            request.onsuccess = function(e) {
+                const cursor = e.target.result;
+
+                if (cursor) {
+                    const weekData = cursor.value;
+                    const weekStartDate = parseDate(weekData.weekStart);
+
+                    weekData.rows.forEach((row, rowIdx) => {
+                        row.forEach((cell, colIdx) => {
+                            if (!cell.company || !cell.company.trim()) return;
+
+                            const cellDate = new Date(weekStartDate);
+                            cellDate.setDate(cellDate.getDate() + colIdx);
+
+                            if (cellDate >= start && cellDate <= end) {
+                                const statusInfo = STATUS_MAP[cell.status] || STATUS_MAP.SCHEDULED;
+
+                                data.push({
+                                    '날짜': formatDate(cellDate),
+                                    '요일': DAYS[colIdx],
+                                    '상태': statusInfo.name,
+                                    '업체명': cell.company || '',
+                                    '상차지': cell.loading || '',
+                                    '시간': cell.time || '',
+                                    '방통차': cell.bang || '',
+                                    '집게차': cell.jip || '',
+                                    '연락처': cell.contact || '',
+                                    '특이사항': cell.notes || '',
+                                    '작성자': cell.author || ''
+                                });
+                            }
+                        });
+                    });
+
+                    cursor.continue();
+                } else {
+                    if (data.length === 0) {
+                        alert('내보낼 데이터가 없습니다.');
+                        return;
+                    }
+
+                    const ws = XLSX.utils.json_to_sheet(data);
+                    const wb = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(wb, ws, '배차데이터');
+
+                    XLSX.writeFile(wb, `배차데이터_${startDate}_${endDate}.xlsx`);
+
+                    showToast('✅ Excel 파일이 다운로드되었습니다');
+                    closeExportModal();
+                }
+            };
+
+            request.onerror = function(e) {
+                console.error('Excel 내보내기 실패:', e.target.error);
+                logError('Export Excel Error', 'Excel 내보내기 실패', e.target.error.message);
+                alert('내보내기 중 오류가 발생했습니다.');
+            };
+        }
+
+        function showVehicleModal() {
+            const bangCount = localStorage.getItem('bangCount') || '5';
+            const jipCount = localStorage.getItem('jipCount') || '3';
+
+            document.getElementById('bangCountInput').value = bangCount;
+            document.getElementById('jipCountInput').value = jipCount;
+
+            document.getElementById('vehicleModal').classList.remove('hidden');
+            document.getElementById('vehicleModal').classList.add('flex');
+        }
+
+        function closeVehicleModal() {
+            document.getElementById('vehicleModal').classList.add('hidden');
+            document.getElementById('vehicleModal').classList.remove('flex');
+        }
+
+        function saveVehicleCount() {
+            const bangCount = parseInt(document.getElementById('bangCountInput').value);
+            const jipCount = parseInt(document.getElementById('jipCountInput').value);
+
+            if (bangCount < 1 || bangCount > 20) {
+                alert('방통차 대수는 1-20 사이여야 합니다.');
+                return;
+            }
+
+            if (jipCount < 1 || jipCount > 10) {
+                alert('집게차 대수는 1-10 사이여야 합니다.');
+                return;
+            }
+
+            localStorage.setItem('bangCount', bangCount);
+            localStorage.setItem('jipCount', jipCount);
+
+            closeVehicleModal();
+            showToast('✅ 차량 설정이 저장되었습니다');
+        }
+
+        function toggleHeader() {
+            const headerContent = document.getElementById('headerContent');
+            const icon = document.getElementById('headerToggleIcon');
+
+            if (headerContent.classList.contains('compact')) {
+                headerContent.classList.remove('compact');
+                icon.style.transform = 'rotate(0deg)';
+            } else {
+                headerContent.classList.add('compact');
+                icon.style.transform = 'rotate(180deg)';
+            }
+        }
+
+        function openDrawer() {
+            document.getElementById('mobileDrawer').classList.add('open');
+            document.getElementById('drawerOverlay').classList.add('show');
+        }
+
+        function closeDrawer() {
+            document.getElementById('mobileDrawer').classList.remove('open');
+            document.getElementById('drawerOverlay').classList.remove('show');
+        }
+
+        function handleHeaderScroll() {
+            if (!scrollTicking) {
+                window.requestAnimationFrame(() => {
+                    const currentScrollY = window.scrollY;
+                    const headerContent = document.getElementById('headerContent');
+
+                    if (window.innerWidth <= 768) {
+                        if (currentScrollY > lastScrollY && currentScrollY > 100) {
+                            if (!headerContent.classList.contains('compact')) {
+                                headerContent.classList.add('compact');
+                            }
+                        } else if (currentScrollY < lastScrollY) {
+                            if (headerContent.classList.contains('compact')) {
+                                headerContent.classList.remove('compact');
+                            }
+                        }
+                    }
+
+                    lastScrollY = currentScrollY;
+                    scrollTicking = false;
+                });
+
+                scrollTicking = true;
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const focusView = document.getElementById('focusView');
+                if (!focusView.classList.contains('hidden')) {
+                    closeFocusView();
+                    return;
+                }
+
+                const pivotModal = document.getElementById('pivotModal');
+                if (pivotModal.classList.contains('flex')) {
+                    closePivotModal();
+                    return;
+                }
+
+                const writerModal = document.getElementById('writerModal');
+                if (writerModal.classList.contains('flex')) {
+                    closeWriterModal();
+                    return;
+                }
+
+                const searchModal = document.getElementById('searchModal');
+                if (searchModal.classList.contains('flex')) {
+                    closeSearchModal();
+                    return;
+                }
+
+                const exportModal = document.getElementById('exportModal');
+                if (exportModal.classList.contains('flex')) {
+                    closeExportModal();
+                    return;
+                }
+
+                const vehicleModal = document.getElementById('vehicleModal');
+                if (vehicleModal.classList.contains('flex')) {
+                    closeVehicleModal();
+                    return;
+                }
+
+                const mobileDrawer = document.getElementById('mobileDrawer');
+                if (mobileDrawer.classList.contains('open')) {
+                    closeDrawer();
+                    return;
+                }
+            }
+        });
+
+        if ('visualViewport' in window) {
+            let lastHeight = window.visualViewport.height;
+
+            window.visualViewport.addEventListener('resize', function() {
+                const currentHeight = window.visualViewport.height;
+                const heightDiff = lastHeight - currentHeight;
+
+                if (heightDiff > 100) {
+                    const pivotModal = document.getElementById('pivotModal');
+                    if (pivotModal && pivotModal.classList.contains('flex')) {
+                        const modalContent = pivotModal.querySelector('.modal-content');
+                        if (modalContent) {
+                            modalContent.scrollTop = modalContent.scrollHeight;
+                            modalContent.style.paddingBottom = heightDiff + 'px';
+                        }
+                    }
+                } else if (heightDiff < -100) {
+                    const modalContent = document.querySelector('#pivotModal .modal-content');
+                    if (modalContent) {
+                        modalContent.style.paddingBottom = '';
+                    }
+                }
+
+                lastHeight = currentHeight;
+            });
+        } else {
+            let lastHeight = window.innerHeight;
+
+            window.addEventListener('resize', function() {
+                const currentHeight = window.innerHeight;
+                const heightDiff = lastHeight - currentHeight;
+
+                if (heightDiff > 100) {
+                    const pivotModal = document.getElementById('pivotModal');
+                    if (pivotModal && pivotModal.classList.contains('flex')) {
+                        const modalContent = pivotModal.querySelector('.modal-content');
+                        if (modalContent) {
+                            modalContent.scrollTop = modalContent.scrollHeight;
+                            modalContent.style.paddingBottom = heightDiff + 'px';
+                        }
+                    }
+                } else if (heightDiff < -100) {
+                    const modalContent = document.querySelector('#pivotModal .modal-content');
+                    if (modalContent) {
+                        modalContent.style.paddingBottom = '';
+                    }
+                }
+
+                lastHeight = currentHeight;
+            });
+        }
+
+        window.addEventListener('scroll', handleHeaderScroll, { passive: true });
+
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && currentWeekStart) {
+                loadWeek(currentWeekStart);
+            }
+        });
+
+        window.addEventListener('error', function(e) {
+            console.error('Global error:', e.error);
+            logError('Global Error', e.message, e.filename + ':' + e.lineno);
+        });
+
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('Unhandled rejection:', e.reason);
+            logError('Unhandled Rejection', 'Promise rejected', e.reason.toString());
+        });
+
+        window.onload = async function() {
+            try {
+                await initDB();
+
+                loadWriter();
+
+                const today = new Date();
+                currentWeekStart = formatDate(getWeekStart(today));
+
+                document.getElementById('weekPicker').value = getWeekInputValue(today);
+                document.getElementById('specificDate').value = formatDate(today);
+
+                loadWeek(currentWeekStart);
+
+                logAccess();
+
+                console.log('[✓ 시스템 초기화 완료]');
+                console.log('[✓ 현재 주:', currentWeekStart + ']');
+
+            } catch (error) {
+                console.error('초기화 실패:', error);
+                alert('시스템 초기화에 실패했습니다. 페이지를 새로고침해주세요.');
+            }
+        };
+    </script>
+</body>
+</html>
